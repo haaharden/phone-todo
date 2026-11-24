@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,7 +22,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -43,11 +43,11 @@ import com.self.phonetodo.model.Todo
 import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.ui.components.WheelDateTimePicker
 import java.time.LocalDate
-import java.time.ZonedDateTime
 
 /**
- * Single-screen bottom sheet for creating/editing a todo with an inline tactile 3-wheel date-time picker.
- * Zero nested dialogs or clunky calendar/clock popups.
+ * Single-screen bottom sheet for creating/editing a todo.
+ * Timing reminder is enabled by default for new todos (zero switch friction), with an inline
+ * dual-mode precision wheel ([Date | Hour:Min] + expandable [Year | Month | Day]).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -68,14 +68,17 @@ fun TodoEditorSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val defaultZdt = remember(defaultTimeZone) {
-        ZonedDateTime.now(ReminderCalculator.safeZone(defaultTimeZone)).plusMinutes(30)
+        ReminderCalculator.defaultNewReminderDateTime(defaultTimeZone)
     }
 
     var text by remember(editingTodo) { mutableStateOf(editingTodo?.text.orEmpty()) }
     var categoryId by remember(editingTodo, defaultCategoryId) {
         mutableStateOf(editingTodo?.categoryId ?: defaultCategoryId)
     }
-    var reminderEnabled by remember(editingTodo) { mutableStateOf(editingTodo?.reminder != null) }
+    // New todos default straight to timed reminders without needing to toggle a switch
+    var reminderEnabled by remember(editingTodo) {
+        mutableStateOf(editingTodo == null || editingTodo.reminder != null)
+    }
 
     val initialDate = remember(editingTodo) {
         editingTodo?.reminder?.let { ReminderCalculator.parseDate(it.date) }?.takeIf { !it.isBefore(LocalDate.now()) }
@@ -167,13 +170,22 @@ fun TodoEditorSheet(
 
             HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
 
-            // Reminder switch
+            // Timing reminder header (default ON, zero switch; quiet text button to clear or re-enable)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("定时提醒", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                    Text(
+                        text = if (reminderEnabled) "定时提醒" else "未设定时提醒",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = if (reminderEnabled) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
                     if (reminderEnabled) {
                         val preview = ReminderCalculator.buildReminder(
                             pickedDate,
@@ -189,13 +201,23 @@ fun TodoEditorSheet(
                         )
                     }
                 }
-                Switch(
-                    checked = reminderEnabled,
-                    onCheckedChange = { reminderEnabled = it },
-                )
+                TextButton(
+                    onClick = { reminderEnabled = !reminderEnabled },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = if (reminderEnabled) "不提醒" else "+ 设定时",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (reminderEnabled) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                }
             }
 
-            // Inline tactile 3-wheel date-time picker + quick presets + repeat
+            // Inline dual-mode wheel + quick presets + repeat
             AnimatedVisibility(visible = reminderEnabled) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     // Quick one-tap presets that smoothly spin the wheels

@@ -208,10 +208,11 @@ object ReminderCalculator {
         val zone = safeZone(tz)
         val zdt = Instant.ofEpochMilli(utcMs).atZone(zone)
         val today = LocalDate.now(zone)
-        val datePrefix = when (zdt.toLocalDate()) {
-            today -> "今天"
-            today.plusDays(1) -> "明天"
-            today.minusDays(1) -> "昨天"
+        val datePrefix = when {
+            zdt.toLocalDate() == today -> "今天"
+            zdt.toLocalDate() == today.plusDays(1) -> "明天"
+            zdt.toLocalDate() == today.minusDays(1) -> "昨天"
+            zdt.year != today.year -> "${zdt.year}/${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[zdt.dayOfWeek.toDeskWeekday()]}"
             else -> "${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[zdt.dayOfWeek.toDeskWeekday()]}"
         }
         return "$datePrefix %02d:%02d".format(zdt.hour, zdt.minute)
@@ -269,6 +270,12 @@ object ReminderCalculator {
         )
         val next = nextOccurrence(base, System.currentTimeMillis() - 1)
         return base.copy(nextAt = next)
+    }
+
+    fun defaultNewReminderDateTime(tz: String): ZonedDateTime {
+        val raw = ZonedDateTime.now(safeZone(tz)).plusMinutes(30).truncatedTo(ChronoUnit.MINUTES)
+        val rem = raw.minute % 5
+        return if (rem == 0) raw else raw.plusMinutes((5 - rem).toLong())
     }
 
     fun quickReminderAfterMinutes(minutes: Long, tz: String): Reminder {

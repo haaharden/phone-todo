@@ -206,4 +206,16 @@ class PhoneTodoUnitTests {
         )
         assertTrue(GithubSyncManager.isSemanticallyEqual(a, b))
     }
+
+    @Test
+    fun reminderCalculator_defaultTimeRoundsToFiveMinAndFormatsFutureYear() {
+        val dt = ReminderCalculator.defaultNewReminderDateTime("Asia/Shanghai")
+        assertEquals(0, dt.minute % 5)
+        assertEquals(0, dt.second)
+
+        val futureYearMs = ZonedDateTime.parse("2030-06-15T09:30:00+08:00").toInstant().toEpochMilli()
+        val formatted = ReminderCalculator.formatIn(futureYearMs, "Asia/Shanghai")
+        assertTrue("Expected year prefix in '$formatted'", formatted.startsWith("2030/6/15 "))
+        assertTrue(formatted.endsWith("09:30"))
+    }
 }
