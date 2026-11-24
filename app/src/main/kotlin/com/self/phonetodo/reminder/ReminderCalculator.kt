@@ -83,9 +83,32 @@ object ReminderCalculator {
                 .thenByDescending { it.createdAt },
         )
 
-    /** Determines whether a pending todo belongs in the focused "今日待办" tab. */
-    fun isTodayTodo(todo: Todo, now: Long = System.currentTimeMillis()): Boolean {
+    /**
+     * True if a pending todo originated strictly before today (00:00 local time):
+     * either its reminder timestamp was before today, or (if unscheduled) it was created before today.
+     */
+    fun isPastCarryover(todo: Todo, now: Long = System.currentTimeMillis()): Boolean {
         if (todo.done || todo.deletedAt != null) return false
+        val localZone = ZoneId.systemDefault()
+        val startOfTodayMs = Instant.ofEpochMilli(now)
+            .atZone(localZone)
+            .toLocalDate()
+            .atStartOfDay(localZone)
+            .toInstant()
+            .toEpochMilli()
+
+        val rem = todo.reminder
+        return if (rem != null) {
+            displayEpochMs(rem) < startOfTodayMs
+        } else {
+            todo.createdAt < startOfTodayMs
+        }
+    }
+
+    /** True if a pending todo belongs specifically to Today (not past carryover, not strictly future). */
+    fun isTodayOnlyTodo(todo: Todo, now: Long = System.currentTimeMillis()): Boolean {
+        if (todo.done || todo.deletedAt != null) return false
+        if (isPastCarryover(todo, now)) return false
         if (todo.pinned) return true
 
         val localZone = ZoneId.systemDefault()
@@ -94,13 +117,27 @@ object ReminderCalculator {
 
         val rem = todo.reminder
         if (rem != null) {
-            // Overdue / already fired OR scheduled before midnight tonight
             return isFiredOrOverdue(rem, now) || displayEpochMs(rem) <= endOfTodayMs
         }
-
-        // Unscheduled todos created today appear in Today automatically
         val createdDate = Instant.ofEpochMilli(todo.createdAt).atZone(localZone).toLocalDate()
         return createdDate == today
+    }
+
+    /** Total items shown in the focused "今日待办" tab (Past carryover + Today). */
+    fun isTodayTodo(todo: Todo, now: Long = System.currentTimeMillis()): Boolean =
+        isPastCarryover(todo, now) || isTodayOnlyTodo(todo, now)
+
+    /** Concise red subtitle for unscheduled past carryover items (e.g. "昨天未完成", "3天前"). */
+    fun pastUnscheduledLabel(todo: Todo, now: Long = System.currentTimeMillis()): String {
+        val localZone = ZoneId.systemDefault()
+        val today = Instant.ofEpochMilli(now).atZone(localZone).toLocalDate()
+        val createdDate = Instant.ofEpochMilli(todo.createdAt).atZone(localZone).toLocalDate()
+        val days = ChronoUnit.DAYS.between(createdDate, today).coerceAtLeast(1)
+        return when {
+            days == 1L -> "昨天未完成"
+            days <= 14L -> "${days}天前"
+            else -> "${createdDate.monthValue}/${createdDate.dayOfMonth}"
+        }
     }
 
     fun nextOccurrence(rem: Reminder, afterEpochMs: Long): Long? {

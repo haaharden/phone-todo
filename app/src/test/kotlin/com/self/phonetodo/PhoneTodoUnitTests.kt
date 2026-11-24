@@ -146,5 +146,42 @@ class PhoneTodoUnitTests {
         assertFalse(ReminderCalculator.isFiredOrOverdue(futureTodo.reminder!!, now))
         assertTrue(ReminderCalculator.isTodayTodo(firedTodo, now))
         assertTrue(ReminderCalculator.isTodayTodo(futureTodo, now))
+        assertFalse(ReminderCalculator.isPastCarryover(firedTodo, now))
+    }
+
+    @Test
+    fun pastCarryover_separatesYesterdayItemsFromToday() {
+        val now = ZonedDateTime.parse("2026-11-24T12:00:00+08:00").toInstant().toEpochMilli()
+        val yesterdayRemMs = ZonedDateTime.parse("2026-11-23T18:00:00+08:00").toInstant().toEpochMilli()
+        val threeDaysAgoMs = ZonedDateTime.parse("2026-11-21T10:00:00+08:00").toInstant().toEpochMilli()
+        val tomorrowRemMs = ZonedDateTime.parse("2026-11-25T09:00:00+08:00").toInstant().toEpochMilli()
+
+        val pastWithRem = Todo(
+            id = "p1",
+            text = "昨天报销",
+            createdAt = yesterdayRemMs,
+            reminder = Reminder("2026-11-23", "18:00", "Asia/Shanghai", Repeat(), nextAt = null, lastFiredAt = yesterdayRemMs),
+        )
+        val pastNoRem = Todo(
+            id = "p2",
+            text = "三天前未设提醒",
+            createdAt = threeDaysAgoMs,
+            reminder = null,
+        )
+        val tomorrowTodo = Todo(
+            id = "f1",
+            text = "明天交周报",
+            createdAt = now,
+            reminder = Reminder("2026-11-25", "09:00", "Asia/Shanghai", Repeat(), nextAt = tomorrowRemMs),
+        )
+
+        assertTrue(ReminderCalculator.isPastCarryover(pastWithRem, now))
+        assertTrue(ReminderCalculator.isPastCarryover(pastNoRem, now))
+        assertFalse(ReminderCalculator.isTodayOnlyTodo(pastWithRem, now))
+        assertFalse(ReminderCalculator.isTodayOnlyTodo(pastNoRem, now))
+        assertTrue(ReminderCalculator.isTodayTodo(pastWithRem, now))
+        assertTrue(ReminderCalculator.isTodayTodo(pastNoRem, now))
+        assertEquals("3天前", ReminderCalculator.pastUnscheduledLabel(pastNoRem, now))
+        assertFalse(ReminderCalculator.isTodayTodo(tomorrowTodo, now))
     }
 }

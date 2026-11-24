@@ -48,6 +48,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -88,7 +91,9 @@ fun TodoScreen(
     val categoryNameMap = remember(activeCategories) { activeCategories.associate { it.id to it.name } }
     val activeTodos = remember(todoData) { todoData.activeTodos() }
     val allPending = remember(activeTodos) { ReminderCalculator.sortPendingTodos(activeTodos.filter { !it.done }) }
-    val todayPending = remember(allPending) { allPending.filter { ReminderCalculator.isTodayTodo(it) } }
+    val pastCarryover = remember(allPending) { allPending.filter { ReminderCalculator.isPastCarryover(it) } }
+    val todayOnly = remember(allPending) { allPending.filter { ReminderCalculator.isTodayOnlyTodo(it) } }
+    val todayTotalCount = pastCarryover.size + todayOnly.size
 
     Column(
         modifier = Modifier
@@ -148,7 +153,7 @@ fun TodoScreen(
         ) {
             ScopeTabHeader(
                 title = "今日待办",
-                count = todayPending.size,
+                count = todayTotalCount,
                 selected = pagerState.currentPage == 0,
                 onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
             )
@@ -171,7 +176,8 @@ fun TodoScreen(
         ) { page ->
             if (page == 0) {
                 TodayTodoPage(
-                    todayPending = todayPending,
+                    pastCarryover = pastCarryover,
+                    todayOnly = todayOnly,
                     allPendingCount = allPending.size,
                     categoryNameMap = categoryNameMap,
                     onToggleTodo = onToggleTodo,
@@ -228,7 +234,8 @@ fun TodoScreen(
 
 @Composable
 private fun TodayTodoPage(
-    todayPending: List<Todo>,
+    pastCarryover: List<Todo>,
+    todayOnly: List<Todo>,
     allPendingCount: Int,
     categoryNameMap: Map<String, String>,
     onToggleTodo: (String) -> Unit,
@@ -238,24 +245,103 @@ private fun TodayTodoPage(
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 112.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item(key = "today_sheet") {
-            TodoPaperSheet(
-                todos = todayPending,
-                categoryNameMap = categoryNameMap,
-                showCategoryName = true,
-                emptyTitle = "今日待办已清空",
-                emptySubtitle = if (allPendingCount > 0) {
-                    "左滑可查看全部 $allPendingCount 项待办，或轻触右下角加号记录新事项。"
-                } else {
-                    "轻触右下角加号记下一件事，或点右上角从 Super Productivity 批量迁移。"
-                },
-                emptyActionLabel = if (allPendingCount > 0) "查看全部待办" else null,
-                onEmptyAction = onSwitchToAll,
-                onToggleTodo = onToggleTodo,
-                onEditTodo = onEditTodo,
-            )
+        // Zone 1: Past Carryover (items from before today that remain unchecked)
+        if (pastCarryover.isNotEmpty()) {
+            item(key = "past_carryover_zone") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.error),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = "往日遗留",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${pastCarryover.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.78f),
+                        )
+                    }
+
+                    TodoPaperSheet(
+                        todos = pastCarryover,
+                        categoryNameMap = categoryNameMap,
+                        showCategoryName = true,
+                        emptyTitle = "",
+                        emptySubtitle = "",
+                        emptyActionLabel = null,
+                        onEmptyAction = {},
+                        onToggleTodo = onToggleTodo,
+                        onEditTodo = onEditTodo,
+                        isCarryoverZone = true,
+                    )
+                }
+            }
+        }
+
+        // Zone 2: Today
+        item(key = "today_zone") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (pastCarryover.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = "今日",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "${todayOnly.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        )
+                    }
+                }
+
+                TodoPaperSheet(
+                    todos = todayOnly,
+                    categoryNameMap = categoryNameMap,
+                    showCategoryName = true,
+                    emptyTitle = if (pastCarryover.isNotEmpty()) "今日暂无新增到期事项" else "今日待办已清空",
+                    emptySubtitle = when {
+                        pastCarryover.isNotEmpty() -> "先清掉上方的往日遗留，或轻触右下角加号记下今天的计划。"
+                        allPendingCount > 0 -> "左滑可查看全部 $allPendingCount 项待办，或轻触右下角加号记录新事项。"
+                        else -> "轻触右下角加号记下一件事，或点右上角从 Super Productivity 批量迁移。"
+                    },
+                    emptyActionLabel = if (todayOnly.isEmpty() && pastCarryover.isEmpty() && allPendingCount > 0) "查看全部待办" else null,
+                    onEmptyAction = onSwitchToAll,
+                    onToggleTodo = onToggleTodo,
+                    onEditTodo = onEditTodo,
+                )
+            }
         }
     }
 }
@@ -413,12 +499,43 @@ private fun TodoPaperSheet(
     onToggleTodo: (String) -> Unit,
     onEditTodo: (Todo) -> Unit,
     dimSurface: Boolean = false,
+    isCarryoverZone: Boolean = false,
 ) {
+    val errorTint = MaterialTheme.colorScheme.error
+    val containerColor = when {
+        dimSurface -> MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+        else -> MaterialTheme.colorScheme.surface
+    }
+    val borderColor = if (isCarryoverZone) {
+        errorTint.copy(alpha = 0.24f)
+    } else {
+        MaterialTheme.colorScheme.outlineVariant
+    }
+
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = if (dimSurface) MaterialTheme.colorScheme.surface.copy(alpha = 0.72f) else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth(),
+        color = containerColor,
+        border = BorderStroke(0.5.dp, borderColor),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isCarryoverZone) {
+                    Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .drawWithContent {
+                            // Subtle warm-rose paper wash + crisp 2.5dp left carmine rail
+                            drawRect(color = errorTint.copy(alpha = 0.038f))
+                            drawContent()
+                            drawRect(
+                                color = errorTint.copy(alpha = 0.78f),
+                                topLeft = Offset.Zero,
+                                size = Size(2.5.dp.toPx(), size.height),
+                            )
+                        }
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         if (todos.isEmpty()) {
             Column(
@@ -620,7 +737,9 @@ private fun TodoPaperRow(
     onClick: () -> Unit,
 ) {
     val reminder = todo.reminder
-    val isFiredRed = !todo.done && reminder != null && ReminderCalculator.isFiredOrOverdue(reminder)
+    val isPast = !todo.done && ReminderCalculator.isPastCarryover(todo)
+    val isFiredRed = !todo.done && (isPast || (reminder != null && ReminderCalculator.isFiredOrOverdue(reminder)))
+    val pastUnscheduledText = if (isPast && reminder == null) ReminderCalculator.pastUnscheduledLabel(todo) else null
 
     Row(
         modifier = Modifier
@@ -692,7 +811,7 @@ private fun TodoPaperRow(
                 )
             }
 
-            if (reminder != null || !categoryName.isNullOrBlank()) {
+            if (reminder != null || pastUnscheduledText != null || !categoryName.isNullOrBlank()) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -725,6 +844,14 @@ private fun TodoPaperRow(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                    } else if (pastUnscheduledText != null) {
+                        Text(
+                            text = pastUnscheduledText,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                        )
                     }
 
                     if (!categoryName.isNullOrBlank()) {
