@@ -9,7 +9,6 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 -keep,includedescriptorclasses class com.self.phonetodo.model.** { *; }
--keep,includedescriptorclasses class com.self.phonetodo.data.GoogleOAuthTokens** { *; }
 
 # Keep Room / WorkManager / Glance reflective constructors (critical for AGP 9 R8 full mode!)
 -keep class * extends androidx.room.RoomDatabase {

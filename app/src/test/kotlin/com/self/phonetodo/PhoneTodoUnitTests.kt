@@ -8,6 +8,7 @@ import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.model.TodoData
 import com.self.phonetodo.reminder.ReminderCalculator
+import com.self.phonetodo.sync.GithubSyncManager
 import com.self.phonetodo.sync.SyncMerger
 import com.self.phonetodo.update.AppUpdater
 import org.junit.Assert.assertEquals
@@ -183,5 +184,26 @@ class PhoneTodoUnitTests {
         assertTrue(ReminderCalculator.isTodayTodo(pastNoRem, now))
         assertEquals("3天前", ReminderCalculator.pastUnscheduledLabel(pastNoRem, now))
         assertFalse(ReminderCalculator.isTodayTodo(tomorrowTodo, now))
+    }
+
+    @Test
+    fun githubSyncManager_normalizesRepoAndChecksEquality() {
+        assertEquals("haaharden/todo-sync", GithubSyncManager.normalizeRepo("haaharden/todo-sync"))
+        assertEquals("haaharden/todo-sync", GithubSyncManager.normalizeRepo("https://github.com/haaharden/todo-sync.git"))
+        assertEquals("haaharden/todo-sync", GithubSyncManager.normalizeRepo("  github.com/haaharden/todo-sync/  "))
+        assertNull(GithubSyncManager.normalizeRepo("invalid-repo"))
+        assertNull(GithubSyncManager.normalizeRepo("a/b/c"))
+
+        val a = TodoData(
+            version = 3,
+            categories = listOf(Category("c1", "工作", collapsed = true, updatedAt = 100L)),
+            inboxCollapsed = true,
+            todos = listOf(Todo("t1", "买咖啡", createdAt = 10L, updatedAt = 100L)),
+        )
+        val b = a.copy(
+            categories = listOf(Category("c1", "工作", collapsed = false, updatedAt = 100L)),
+            inboxCollapsed = false,
+        )
+        assertTrue(GithubSyncManager.isSemanticallyEqual(a, b))
     }
 }

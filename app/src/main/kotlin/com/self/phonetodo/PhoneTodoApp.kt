@@ -8,8 +8,7 @@ import com.self.phonetodo.data.UsageRepository
 import com.self.phonetodo.overlay.UnlockBannerController
 import com.self.phonetodo.reminder.NotificationHelper
 import com.self.phonetodo.reminder.ReminderScheduler
-import com.self.phonetodo.service.PhoneTodoForegroundService
-import com.self.phonetodo.sync.GoogleDriveSyncManager
+import com.self.phonetodo.sync.GithubSyncManager
 import com.self.phonetodo.widget.PhoneTodoWidget
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,7 +31,7 @@ class PhoneTodoApp : Application() {
         private set
     lateinit var unlockBannerController: UnlockBannerController
         private set
-    lateinit var googleDriveSyncManager: GoogleDriveSyncManager
+    lateinit var githubSyncManager: GithubSyncManager
         private set
 
     private var syncDebounceJob: Job? = null
@@ -50,8 +49,7 @@ class PhoneTodoApp : Application() {
             usageRepository = usageRepository,
             settingsRepository = settingsRepository,
         )
-        googleDriveSyncManager = GoogleDriveSyncManager(
-            context = this,
+        githubSyncManager = GithubSyncManager(
             todoRepository = todoRepository,
             settingsRepository = settingsRepository,
         )
@@ -59,7 +57,7 @@ class PhoneTodoApp : Application() {
         todoRepository.onDataMutated = { data, triggerSync ->
             reminderScheduler.syncAll(data, fireMissed = false)
             refreshWidgetAsync()
-            if (triggerSync && settingsRepository.settings.value.googleSyncEnabled) {
+            if (triggerSync && settingsRepository.settings.value.githubSyncEnabled) {
                 scheduleDebouncedSync()
             }
         }
@@ -72,7 +70,17 @@ class PhoneTodoApp : Application() {
         syncDebounceJob?.cancel()
         syncDebounceJob = appScope.launch {
             delay(3_000L)
-            googleDriveSyncManager.syncNow()
+            githubSyncManager.syncNow()
+        }
+    }
+
+    fun syncIfStale(minIntervalMs: Long = 60_000L) {
+        val s = settingsRepository.settings.value
+        if (!s.githubSyncEnabled) return
+        val last = s.lastSyncAt ?: 0L
+        if (System.currentTimeMillis() - last < minIntervalMs) return
+        appScope.launch {
+            githubSyncManager.syncNow()
         }
     }
 

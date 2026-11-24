@@ -24,6 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,6 +58,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -75,15 +79,16 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    hasSavedGithubToken: Boolean,
     isMonitorRunning: Boolean,
     latestRelease: ReleaseUpdateInfo?,
     onReleaseChecked: (ReleaseUpdateInfo?) -> Unit,
     onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
     onToggleKeepAlive: (Boolean) -> Unit,
     onPreviewUnlockBanner: () -> Unit,
-    onGoogleSignIn: () -> Unit,
-    onGoogleSyncNow: suspend () -> Result<String>,
-    onGoogleSignOut: () -> Unit,
+    onGithubConnectAndSync: suspend (repo: String, token: String) -> Result<String>,
+    onGithubSyncNow: suspend () -> Result<String>,
+    onGithubDisconnect: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -91,7 +96,10 @@ fun SettingsScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var checkList by remember { mutableStateOf(XiaomiPermissionHelper.getCheckList(context)) }
-    var clientIdInput by remember(settings.googleClientId) { mutableStateOf(settings.googleClientId) }
+    var syncRepoInput by remember(settings.githubSyncRepo) { mutableStateOf(settings.githubSyncRepo) }
+    var syncTokenInput by remember { mutableStateOf("") }
+    var tokenVisible by remember { mutableStateOf(false) }
+    var tokenSaved by remember(hasSavedGithubToken) { mutableStateOf(hasSavedGithubToken) }
     var repoInput by remember(settings.githubUpdateRepo) { mutableStateOf(settings.githubUpdateRepo) }
     var syncBusy by remember { mutableStateOf(false) }
 
@@ -442,47 +450,80 @@ fun SettingsScreen(
                 }
             }
 
-            // 4. Google Drive Sync with DeskTodo
-            SettingsGroup(title = "Google Drive 同步（DeskTodo 互通）") {
+            // 4. GitHub Private Repo Sync with DeskTodo
+            SettingsGroup(title = "GitHub 私有仓库同步（DeskTodo 互通）") {
                 Text(
                     text = settings.lastSyncStatus,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Medium,
                 )
-                if (settings.googleAccountEmail.isNotBlank()) {
-                    Text(
-                        text = settings.googleAccountEmail,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    text = "在 GitHub 建一个私有仓库并生成 Fine-grained Token（仅勾选该仓库 Contents 读写权限），手机和电脑填同一套即可自动双向同步。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 OutlinedTextField(
-                    value = clientIdInput,
-                    onValueChange = {
-                        clientIdInput = it
-                        onUpdateSettings { s -> s.copy(googleClientId = it.trim()) }
-                    },
-                    label = { Text("Google OAuth Client ID (Android)") },
-                    placeholder = { Text("xxxx.apps.googleusercontent.com") },
+                    value = syncRepoInput,
+                    onValueChange = { syncRepoInput = it },
+                    label = { Text("私有仓库 (owner/repo)") },
+                    placeholder = { Text("haaharden/todo-sync") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                OutlinedTextField(
+                    value = syncTokenInput,
+                    onValueChange = { syncTokenInput = it },
+                    label = { Text("GitHub Personal Access Token") },
+                    placeholder = {
+                        Text(if (tokenSaved) "已加密保存（留空则沿用当前 Token）" else "github_pat_... 或 ghp_...")
+                    },
+                    singleLine = true,
+                    visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { tokenVisible = !tokenVisible }) {
+                            Icon(
+                                imageVector = if (tokenVisible) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
+                                contentDescription = if (tokenVisible) "隐藏 Token" else "显示 Token",
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                val configModified = syncRepoInput.trim() != settings.githubSyncRepo || syncTokenInput.isNotBlank()
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    if (!settings.googleSyncEnabled) {
+                    if (!settings.githubSyncEnabled || configModified) {
                         Button(
-                            onClick = onGoogleSignIn,
-                            enabled = clientIdInput.isNotBlank(),
+                            onClick = {
+                                if (!syncBusy) {
+                                    syncBusy = true
+                                    scope.launch {
+                                        val res = onGithubConnectAndSync(syncRepoInput, syncTokenInput)
+                                        res.onSuccess { msg ->
+                                            tokenSaved = true
+                                            syncTokenInput = ""
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        }.onFailure { err ->
+                                            Toast.makeText(context, err.message ?: "连接失败", Toast.LENGTH_LONG).show()
+                                        }
+                                        syncBusy = false
+                                    }
+                                }
+                            },
+                            enabled = !syncBusy && syncRepoInput.isNotBlank() && (syncTokenInput.isNotBlank() || tokenSaved),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("授权登录 Google Drive")
+                            Text(if (syncBusy) "验证并同步中…" else "验证并启用同步")
                         }
                     } else {
                         Button(
@@ -490,7 +531,9 @@ fun SettingsScreen(
                                 if (!syncBusy) {
                                     syncBusy = true
                                     scope.launch {
-                                        onGoogleSyncNow()
+                                        val res = onGithubSyncNow()
+                                        val msg = res.getOrElse { it.message ?: "同步失败" }
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                         syncBusy = false
                                     }
                                 }
@@ -501,11 +544,20 @@ fun SettingsScreen(
                         ) {
                             Text(if (syncBusy) "同步中…" else "立即同步")
                         }
+                    }
+
+                    if (settings.githubSyncEnabled || tokenSaved) {
                         OutlinedButton(
-                            onClick = onGoogleSignOut,
+                            onClick = {
+                                onGithubDisconnect()
+                                tokenSaved = false
+                                syncTokenInput = ""
+                                Toast.makeText(context, "已断开 GitHub 同步", Toast.LENGTH_SHORT).show()
+                            },
+                            enabled = !syncBusy,
                             shape = RoundedCornerShape(12.dp),
                         ) {
-                            Text("退出")
+                            Text("断开")
                         }
                     }
                 }

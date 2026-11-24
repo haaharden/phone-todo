@@ -1,5 +1,6 @@
 package com.self.phonetodo.ui.todo
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -71,6 +72,7 @@ fun TodoScreen(
     settings: AppSettings,
     hasOverlayPermission: Boolean,
     isMonitorRunning: Boolean,
+    isTopScreen: Boolean,
     selectedCategoryFilter: String?,
     onSelectCategoryFilter: (String?) -> Unit,
     onToggleTodo: (String) -> Unit,
@@ -86,6 +88,10 @@ fun TodoScreen(
 
     val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
     val scope = rememberCoroutineScope()
+
+    BackHandler(enabled = isTopScreen && !showNewCatDialog && pagerState.currentPage != 0) {
+        scope.launch { pagerState.animateScrollToPage(0) }
+    }
 
     val activeCategories = remember(todoData) { todoData.activeCategories() }
     val categoryNameMap = remember(activeCategories) { activeCategories.associate { it.id to it.name } }

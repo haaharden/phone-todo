@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,7 +52,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.lifecycleScope
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.permission.XiaomiPermissionHelper
 import com.self.phonetodo.service.PhoneTodoForegroundService
@@ -116,6 +116,7 @@ class MainActivity : ComponentActivity() {
         val app = application as PhoneTodoApp
         app.usageRepository.refresh()
         app.reminderScheduler.syncAll(fireMissed = true)
+        app.syncIfStale()
         ensureMonitorServiceRunning()
     }
 
@@ -134,19 +135,6 @@ class MainActivity : ComponentActivity() {
     private fun handleIntentExtras(intent: Intent?) {
         if (intent?.getStringExtra(EXTRA_OPEN_TAB) == "stats") {
             requestedTabState = MainTab.STATS
-        }
-        val uri = intent?.data ?: return
-        if (uri.scheme == "com.self.phonetodo" && uri.host == "oauth2callback") {
-            val app = application as PhoneTodoApp
-            lifecycleScope.launch {
-                val res = app.googleDriveSyncManager.handleOAuthRedirect(uri)
-                res.onSuccess { email ->
-                    Toast.makeText(this@MainActivity, "已连接 Google Drive：$email", Toast.LENGTH_SHORT).show()
-                    app.googleDriveSyncManager.syncNow()
-                }.onFailure { err ->
-                    Toast.makeText(this@MainActivity, err.message ?: "Google 授权失败", Toast.LENGTH_LONG).show()
-                }
-            }
         }
     }
 
@@ -200,52 +188,9 @@ private fun PhoneTodoRoot(
         }
     }
 
-    when (overlayPage) {
-        OverlayPage.IMPORT -> {
-            ImportScreen(
-                existingTodoIds = todoData.todos.map { it.id }.toSet(),
-                defaultTimeZone = settings.defaultTimeZone,
-                onBack = { overlayPage = OverlayPage.NONE },
-                onConfirmImport = { cats, todos ->
-                    app.todoRepository.bulkImport(cats, todos)
-                },
-            )
-            return
-        }
-
-        OverlayPage.SETTINGS -> {
-            SettingsScreen(
-                settings = settings,
-                isMonitorRunning = isMonitorRunning,
-                latestRelease = latestRelease,
-                onReleaseChecked = { latestRelease = it },
-                onUpdateSettings = { transform -> app.settingsRepository.update(transform) },
-                onToggleKeepAlive = { enabled ->
-                    app.settingsRepository.update { it.copy(keepAliveServiceEnabled = enabled) }
-                    if (enabled) PhoneTodoForegroundService.start(activity)
-                    else PhoneTodoForegroundService.stop(activity)
-                },
-                onPreviewUnlockBanner = {
-                    if (!XiaomiPermissionHelper.hasOverlayPermission(activity)) {
-                        Toast.makeText(activity, "请先开启「显示悬浮窗」权限", Toast.LENGTH_SHORT).show()
-                        XiaomiPermissionHelper.openPermissionPage(activity, "overlay")
-                    } else {
-                        app.unlockBannerController.onPhoneUnlocked(forcePreview = true)
-                    }
-                },
-                onGoogleSignIn = {
-                    app.googleDriveSyncManager.startOAuthSignIn(activity).onFailure { err ->
-                        Toast.makeText(activity, err.message ?: "启动 Google 登录失败", Toast.LENGTH_LONG).show()
-                    }
-                },
-                onGoogleSyncNow = { app.googleDriveSyncManager.syncNow() },
-                onGoogleSignOut = { app.googleDriveSyncManager.signOut() },
-                onBack = { overlayPage = OverlayPage.NONE },
-            )
-            return
-        }
-
-        OverlayPage.NONE -> Unit
+    // Back gesture from Stats tab returns cleanly to Todos tab
+    BackHandler(enabled = overlayPage == OverlayPage.NONE && !showEditorSheet && currentTab != MainTab.TODOS) {
+        currentTab = MainTab.TODOS
     }
 
     val todayFormatted = remember {
@@ -267,6 +212,7 @@ private fun PhoneTodoRoot(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        // Main app layer (kept mounted when Settings/Import open so tab, pager page, and scroll state survive)
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -293,11 +239,11 @@ private fun PhoneTodoRoot(
                     )
                 }
 
-                if (settings.googleSyncEnabled) {
+                if (settings.githubSyncEnabled) {
                     IconButton(
                         onClick = {
                             scope.launch {
-                                val res = app.googleDriveSyncManager.syncNow()
+                                val res = app.githubSyncManager.syncNow()
                                 val msg = res.getOrElse { it.message ?: "同步失败" }
                                 Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
                             }
@@ -348,6 +294,7 @@ private fun PhoneTodoRoot(
                         settings = settings,
                         hasOverlayPermission = hasOverlayPermission,
                         isMonitorRunning = isMonitorRunning,
+                        isTopScreen = overlayPage == OverlayPage.NONE && !showEditorSheet,
                         selectedCategoryFilter = selectedCategoryFilter,
                         onSelectCategoryFilter = { selectedCategoryFilter = it },
                         onToggleTodo = { app.todoRepository.toggleTodoDone(it) },
@@ -434,6 +381,62 @@ private fun PhoneTodoRoot(
                             modifier = Modifier.size(24.dp),
                         )
                     }
+                }
+            }
+        }
+
+        // Secondary full-screen overlay pages with system back-gesture support
+        if (overlayPage != OverlayPage.NONE) {
+            BackHandler { overlayPage = OverlayPage.NONE }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                    ),
+            ) {
+                when (overlayPage) {
+                    OverlayPage.IMPORT -> ImportScreen(
+                        existingTodoIds = todoData.todos.map { it.id }.toSet(),
+                        defaultTimeZone = settings.defaultTimeZone,
+                        onBack = { overlayPage = OverlayPage.NONE },
+                        onConfirmImport = { cats, todos ->
+                            app.todoRepository.bulkImport(cats, todos)
+                        },
+                    )
+
+                    OverlayPage.SETTINGS -> SettingsScreen(
+                        settings = settings,
+                        hasSavedGithubToken = app.settingsRepository.hasGithubToken(),
+                        isMonitorRunning = isMonitorRunning,
+                        latestRelease = latestRelease,
+                        onReleaseChecked = { latestRelease = it },
+                        onUpdateSettings = { transform -> app.settingsRepository.update(transform) },
+                        onToggleKeepAlive = { enabled ->
+                            app.settingsRepository.update { it.copy(keepAliveServiceEnabled = enabled) }
+                            if (enabled) PhoneTodoForegroundService.start(activity)
+                            else PhoneTodoForegroundService.stop(activity)
+                        },
+                        onPreviewUnlockBanner = {
+                            if (!XiaomiPermissionHelper.hasOverlayPermission(activity)) {
+                                Toast.makeText(activity, "请先开启「显示悬浮窗」权限", Toast.LENGTH_SHORT).show()
+                                XiaomiPermissionHelper.openPermissionPage(activity, "overlay")
+                            } else {
+                                app.unlockBannerController.onPhoneUnlocked(forcePreview = true)
+                            }
+                        },
+                        onGithubConnectAndSync = { repo, token ->
+                            app.githubSyncManager.connectAndSync(repo, token)
+                        },
+                        onGithubSyncNow = { app.githubSyncManager.syncNow() },
+                        onGithubDisconnect = { app.githubSyncManager.disconnect() },
+                        onBack = { overlayPage = OverlayPage.NONE },
+                    )
+
+                    OverlayPage.NONE -> Unit
                 }
             }
         }

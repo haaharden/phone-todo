@@ -33,11 +33,9 @@ data class AppSettings(
     val dailyScreenMinutesWarningThreshold: Int = 180,
     // GitHub Releases self-update repository ("owner/repo")
     val githubUpdateRepo: String = "haaharden/phone-todo",
-    // Google Drive sync settings
-    val googleSyncEnabled: Boolean = false,
-    val googleClientId: String = "",
-    val googleAccountEmail: String = "",
-    val googleDriveFileId: String = "",
+    // GitHub private repository sync settings ("owner/repo")
+    val githubSyncEnabled: Boolean = false,
+    val githubSyncRepo: String = "",
     val lastSyncAt: Long? = null,
     val lastSyncStatus: String = "未配置同步",
 )
