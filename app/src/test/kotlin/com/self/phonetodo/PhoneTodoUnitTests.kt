@@ -121,4 +121,30 @@ class PhoneTodoUnitTests {
         assertFalse(AppUpdater.isRemoteVersionNewer("1.1.0", "1.1.0"))
         assertFalse(AppUpdater.isRemoteVersionNewer("1.2.0", "1.1.5"))
     }
+
+    @Test
+    fun firedReminder_staysInPlaceAndFlagsRedUntilCompleted() {
+        val t10 = ZonedDateTime.parse("2026-11-24T10:00:00+08:00").toInstant().toEpochMilli()
+        val t15 = ZonedDateTime.parse("2026-11-24T15:00:00+08:00").toInstant().toEpochMilli()
+        val now = ZonedDateTime.parse("2026-11-24T12:00:00+08:00").toInstant().toEpochMilli()
+
+        val firedTodo = Todo(
+            id = "fired",
+            text = "十点开会",
+            reminder = Reminder("2026-11-24", "10:00", "Asia/Shanghai", Repeat(), nextAt = null, lastFiredAt = t10),
+        )
+        val futureTodo = Todo(
+            id = "future",
+            text = "三点交稿",
+            reminder = Reminder("2026-11-24", "15:00", "Asia/Shanghai", Repeat(), nextAt = t15),
+        )
+        val unscheduled = Todo(id = "none", text = "买咖啡", reminder = null)
+
+        val sorted = ReminderCalculator.sortPendingTodos(listOf(unscheduled, futureTodo, firedTodo))
+        assertEquals(listOf("fired", "future", "none"), sorted.map { it.id })
+        assertTrue(ReminderCalculator.isFiredOrOverdue(firedTodo.reminder!!, now))
+        assertFalse(ReminderCalculator.isFiredOrOverdue(futureTodo.reminder!!, now))
+        assertTrue(ReminderCalculator.isTodayTodo(firedTodo, now))
+        assertTrue(ReminderCalculator.isTodayTodo(futureTodo, now))
+    }
 }

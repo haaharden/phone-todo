@@ -47,7 +47,6 @@ class PhoneTodoApp : Application() {
         reminderScheduler = ReminderScheduler(this, todoRepository)
         unlockBannerController = UnlockBannerController(
             context = this,
-            todoRepository = todoRepository,
             usageRepository = usageRepository,
             settingsRepository = settingsRepository,
         )

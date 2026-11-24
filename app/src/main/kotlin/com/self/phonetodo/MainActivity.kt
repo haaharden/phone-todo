@@ -73,6 +73,7 @@ private enum class OverlayPage { NONE, IMPORT, SETTINGS }
 class MainActivity : ComponentActivity() {
 
     private var hasOverlayPermState by mutableStateOf(false)
+    private var requestedTabState by mutableStateOf<MainTab?>(null)
 
     private val notifPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -90,7 +91,7 @@ class MainActivity : ComponentActivity() {
             notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        handleOAuthIntent(intent)
+        handleIntentExtras(intent)
         hasOverlayPermState = XiaomiPermissionHelper.hasOverlayPermission(this)
         ensureMonitorServiceRunning()
 
@@ -102,6 +103,8 @@ class MainActivity : ComponentActivity() {
                     app = app,
                     activity = this,
                     hasOverlayPermission = hasOverlayPermState,
+                    requestedTab = requestedTabState,
+                    onRequestedTabConsumed = { requestedTabState = null },
                 )
             }
         }
@@ -125,10 +128,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleOAuthIntent(intent)
+        handleIntentExtras(intent)
     }
 
-    private fun handleOAuthIntent(intent: Intent?) {
+    private fun handleIntentExtras(intent: Intent?) {
+        if (intent?.getStringExtra(EXTRA_OPEN_TAB) == "stats") {
+            requestedTabState = MainTab.STATS
+        }
         val uri = intent?.data ?: return
         if (uri.scheme == "com.self.phonetodo" && uri.host == "oauth2callback") {
             val app = application as PhoneTodoApp
@@ -143,6 +149,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    companion object {
+        const val EXTRA_OPEN_TAB = "extra_open_tab"
+    }
 }
 
 @Composable
@@ -150,6 +160,8 @@ private fun PhoneTodoRoot(
     app: PhoneTodoApp,
     activity: MainActivity,
     hasOverlayPermission: Boolean,
+    requestedTab: MainTab?,
+    onRequestedTabConsumed: () -> Unit,
 ) {
     val todoData by app.todoRepository.data.collectAsState()
     val usageOverview by app.usageRepository.overview.collectAsState()
@@ -164,6 +176,14 @@ private fun PhoneTodoRoot(
 
     var showEditorSheet by remember { mutableStateOf(false) }
     var editingTodo by remember { mutableStateOf<Todo?>(null) }
+
+    LaunchedEffect(requestedTab) {
+        if (requestedTab != null) {
+            currentTab = requestedTab
+            overlayPage = OverlayPage.NONE
+            onRequestedTabConsumed()
+        }
+    }
 
     // Quiet background check for a newer GitHub Release on launch
     LaunchedEffect(settings.githubUpdateRepo) {

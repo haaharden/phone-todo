@@ -44,6 +44,7 @@ class UsageRepository(private val context: Context) {
         refresh(now)
     }
 
+    @Suppress("DEPRECATION")
     fun hasUsageStatsPermission(): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = appOps.unsafeCheckOpNoThrow(

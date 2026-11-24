@@ -31,8 +31,10 @@ data class Reminder(
     /** IANA timezone ID, e.g. "Asia/Shanghai" */
     val timeZone: String = "Asia/Shanghai",
     val repeat: Repeat = Repeat(),
-    /** Next trigger time in Unix epoch millis; null if completed/none */
+    /** Next trigger time in Unix epoch millis; null if one-time reminder already fired */
     val nextAt: Long? = null,
+    /** Set when a reminder fires so the todo stays in place with a red timestamp until checked off */
+    val lastFiredAt: Long? = null,
 )
 
 @Serializable

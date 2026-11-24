@@ -20,8 +20,8 @@ android {
     applicationId = "com.self.phonetodo"
     minSdk = 29
     targetSdk = 35
-    versionCode = 4
-    versionName = "1.1.2"
+    versionCode = 5
+    versionName = "1.2.0"
   }
 
   signingConfigs {
@@ -85,11 +85,10 @@ dependencies {
   implementation(libs.androidx.compose.material.icons.extended)
   debugImplementation(libs.androidx.compose.ui.tooling)
 
-  // Serialization, HTTP, OAuth Custom Tabs, Background Work, Glance Widget
+  // Serialization, HTTP, OAuth Custom Tabs, Glance Widget
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.okhttp)
   implementation(libs.androidx.browser)
-  implementation(libs.androidx.work.runtime.ktx)
   implementation(libs.androidx.glance.appwidget)
   implementation(libs.androidx.glance.material3)
 

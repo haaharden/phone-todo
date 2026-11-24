@@ -1,5 +1,6 @@
 package com.self.phonetodo.ui.todo
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -10,38 +11,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Alarm
-import androidx.compose.material.icons.rounded.CalendarToday
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.PushPin
-import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material3.Button
-import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TimePicker
-import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -55,9 +41,14 @@ import com.self.phonetodo.model.Repeat
 import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.reminder.ReminderCalculator
-import java.time.Instant
-import java.time.ZoneOffset
+import com.self.phonetodo.ui.components.WheelDateTimePicker
+import java.time.LocalDate
+import java.time.ZonedDateTime
 
+/**
+ * Single-screen bottom sheet for creating/editing a todo with an inline tactile 3-wheel date-time picker.
+ * Zero nested dialogs or clunky calendar/clock popups.
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TodoEditorSheet(
@@ -76,21 +67,45 @@ fun TodoEditorSheet(
     onDelete: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val defaultZdt = remember(defaultTimeZone) {
+        ZonedDateTime.now(ReminderCalculator.safeZone(defaultTimeZone)).plusMinutes(30)
+    }
+
     var text by remember(editingTodo) { mutableStateOf(editingTodo?.text.orEmpty()) }
     var categoryId by remember(editingTodo, defaultCategoryId) {
         mutableStateOf(editingTodo?.categoryId ?: defaultCategoryId)
     }
-    var reminder by remember(editingTodo) { mutableStateOf(editingTodo?.reminder) }
+    var reminderEnabled by remember(editingTodo) { mutableStateOf(editingTodo?.reminder != null) }
+
+    val initialDate = remember(editingTodo) {
+        editingTodo?.reminder?.let { ReminderCalculator.parseDate(it.date) }?.takeIf { !it.isBefore(LocalDate.now()) }
+            ?: defaultZdt.toLocalDate()
+    }
+    val initialTime = remember(editingTodo) {
+        editingTodo?.reminder?.let { ReminderCalculator.parseTime(it.time) } ?: defaultZdt.toLocalTime()
+    }
+
+    var pickedDate by remember(editingTodo) { mutableStateOf(initialDate) }
+    var pickedHour by remember(editingTodo) { mutableIntStateOf(initialTime.hour) }
+    var pickedMinute by remember(editingTodo) { mutableIntStateOf(initialTime.minute) }
+    var repeat by remember(editingTodo) { mutableStateOf(editingTodo?.reminder?.repeat ?: Repeat()) }
+
     var strongAlert by remember(editingTodo) { mutableStateOf(editingTodo?.strongAlert ?: false) }
     var pinned by remember(editingTodo) { mutableStateOf(editingTodo?.pinned ?: false) }
 
-    var showDatePicker by remember { mutableStateOf(false) }
-    var showTimePicker by remember { mutableStateOf(false) }
+    fun applyQuickPreset(rem: Reminder) {
+        reminderEnabled = true
+        pickedDate = ReminderCalculator.parseDate(rem.date)
+        val t = ReminderCalculator.parseTime(rem.time)
+        pickedHour = t.hour
+        pickedMinute = t.minute
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
     ) {
         Column(
             modifier = Modifier
@@ -101,6 +116,7 @@ fun TodoEditorSheet(
                 .padding(bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -108,7 +124,6 @@ fun TodoEditorSheet(
                 Text(
                     text = if (editingTodo == null) "新建待办" else "编辑待办",
                     style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
                 if (onDelete != null) {
@@ -118,31 +133,27 @@ fun TodoEditorSheet(
                 }
             }
 
+            // Content input
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                placeholder = { Text("准备做什么？") },
+                placeholder = { Text("写下要做的事…") },
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(14.dp),
                 minLines = 2,
                 maxLines = 4,
             )
 
-            // Category picker
+            // Categories
             if (categories.isNotEmpty()) {
-                Text(
-                    text = "分类",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     FilterChip(
                         selected = categoryId == null,
                         onClick = { categoryId = null },
-                        label = { Text("未分类") },
+                        label = { Text("收集箱") },
                     )
                     categories.forEach { cat ->
                         FilterChip(
@@ -154,269 +165,154 @@ fun TodoEditorSheet(
                 }
             }
 
-            // Quick reminders
+            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+            // Reminder switch
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Rounded.Alarm,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "提醒时间",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f),
-                )
-                if (reminder != null) {
-                    IconButton(onClick = { reminder = null }) {
-                        Icon(Icons.Rounded.Close, contentDescription = "清除提醒")
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("定时提醒", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                    if (reminderEnabled) {
+                        val preview = ReminderCalculator.buildReminder(
+                            pickedDate,
+                            pickedHour,
+                            pickedMinute,
+                            editingTodo?.reminder?.timeZone ?: defaultTimeZone,
+                            repeat,
+                        )
+                        Text(
+                            text = ReminderCalculator.summary(preview),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                     }
                 }
-            }
-
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                FilterChip(
-                    selected = false,
-                    onClick = { reminder = ReminderCalculator.quickReminderAfterMinutes(10, defaultTimeZone) },
-                    label = { Text("10分钟后") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { reminder = ReminderCalculator.quickReminderAfterMinutes(60, defaultTimeZone) },
-                    label = { Text("1小时后") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = { reminder = ReminderCalculator.quickReminderTodayOrTomorrowAt(20, 0, defaultTimeZone) },
-                    label = { Text("今晚 20:00") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = {
-                        reminder = ReminderCalculator.quickReminderTodayOrTomorrowAt(
-                            9,
-                            0,
-                            defaultTimeZone,
-                            forceTomorrow = true,
-                        )
-                    },
-                    label = { Text("明早 09:00") },
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = {
-                        if (reminder == null) {
-                            reminder = ReminderCalculator.quickReminderAfterMinutes(30, defaultTimeZone)
-                        }
-                        showDatePicker = true
-                    },
-                    leadingIcon = { Icon(Icons.Rounded.CalendarToday, contentDescription = null) },
-                    label = { Text("自定义日期/时间") },
+                Switch(
+                    checked = reminderEnabled,
+                    onCheckedChange = { reminderEnabled = it },
                 )
             }
 
-            reminder?.let { rem ->
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedButton(
-                            onClick = { showDatePicker = true },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Text(rem.date)
-                        }
-                        OutlinedButton(
-                            onClick = { showTimePicker = true },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Text(rem.time)
-                        }
-                    }
-
-                    // Repeat options
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Repeat, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.width(6.dp))
-                        Text("重复", style = MaterialTheme.typography.labelLarge)
-                    }
+            // Inline tactile 3-wheel date-time picker + quick presets + repeat
+            AnimatedVisibility(visible = reminderEnabled) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Quick one-tap presets that smoothly spin the wheels
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        val options = listOf(
+                        FilterChip(
+                            selected = false,
+                            onClick = { applyQuickPreset(ReminderCalculator.quickReminderAfterMinutes(10, defaultTimeZone)) },
+                            label = { Text("+10分") },
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = { applyQuickPreset(ReminderCalculator.quickReminderAfterMinutes(60, defaultTimeZone)) },
+                            label = { Text("+1小时") },
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = { applyQuickPreset(ReminderCalculator.quickReminderTodayOrTomorrowAt(20, 0, defaultTimeZone)) },
+                            label = { Text("今晚20:00") },
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = {
+                                applyQuickPreset(
+                                    ReminderCalculator.quickReminderTodayOrTomorrowAt(9, 0, defaultTimeZone, forceTomorrow = true),
+                                )
+                            },
+                            label = { Text("明早09:00") },
+                        )
+                    }
+
+                    WheelDateTimePicker(
+                        selectedDate = pickedDate,
+                        selectedHour = pickedHour,
+                        selectedMinute = pickedMinute,
+                        onDateTimeChanged = { d, h, m ->
+                            pickedDate = d
+                            pickedHour = h
+                            pickedMinute = m
+                        },
+                    )
+
+                    // Compact inline repeat picker
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        listOf(
                             RepeatKind.NONE to "不重复",
                             RepeatKind.DAILY to "每天",
                             RepeatKind.WEEKLY to "每周",
                             RepeatKind.MONTHLY to "每月",
                             RepeatKind.YEARLY to "每年",
-                        )
-                        options.forEach { (kind, label) ->
+                        ).forEach { (kind, label) ->
                             FilterChip(
-                                selected = rem.repeat.kind == kind,
-                                onClick = {
-                                    val updated = rem.copy(repeat = rem.repeat.copy(kind = kind))
-                                    val next = ReminderCalculator.nextOccurrence(updated, System.currentTimeMillis() - 1)
-                                    reminder = updated.copy(nextAt = next)
-                                },
+                                selected = repeat.kind == kind,
+                                onClick = { repeat = repeat.copy(kind = kind) },
                                 label = { Text(label) },
                             )
                         }
                     }
 
-                    if (rem.repeat.kind == RepeatKind.WEEKLY) {
-                        val weekdays = listOf(1 to "一", 2 to "二", 3 to "三", 4 to "四", 5 to "五", 6 to "六", 0 to "日")
+                    if (repeat.kind == RepeatKind.WEEKLY) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            weekdays.forEach { (dayInt, dayLabel) ->
-                                val selected = dayInt in rem.repeat.weekdays
-                                FilterChip(
-                                    selected = selected,
-                                    onClick = {
-                                        val nextDays = if (selected) {
-                                            rem.repeat.weekdays - dayInt
-                                        } else {
-                                            rem.repeat.weekdays + dayInt
-                                        }
-                                        val updated = rem.copy(repeat = rem.repeat.copy(weekdays = nextDays))
-                                        val next = ReminderCalculator.nextOccurrence(updated, System.currentTimeMillis() - 1)
-                                        reminder = updated.copy(nextAt = next)
-                                    },
-                                    label = { Text("周$dayLabel") },
-                                )
-                            }
+                            listOf(1 to "一", 2 to "二", 3 to "三", 4 to "四", 5 to "五", 6 to "六", 0 to "日")
+                                .forEach { (dayInt, dayLabel) ->
+                                    val selected = dayInt in repeat.weekdays
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            val nextDays = if (selected) repeat.weekdays - dayInt else repeat.weekdays + dayInt
+                                            repeat = repeat.copy(weekdays = nextDays)
+                                        },
+                                        label = { Text("周$dayLabel") },
+                                    )
+                                }
                         }
                     }
-
-                    Text(
-                        text = "下次触发：${ReminderCalculator.summary(rem)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
                 }
             }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.NotificationsActive, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("闹钟级强提醒", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    Text(
-                        "到点时锁屏亮屏弹窗并响铃，绝不错过",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = strongAlert, onCheckedChange = { strongAlert = it })
+            // Compact inline options row (Strong alert & Pin)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilterChip(
+                    selected = strongAlert,
+                    onClick = { strongAlert = !strongAlert },
+                    label = { Text("闹钟级强提醒") },
+                )
+                FilterChip(
+                    selected = pinned,
+                    onClick = { pinned = !pinned },
+                    label = { Text("置顶") },
+                )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Rounded.PushPin, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("置顶到解锁顶部横幅", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    Text(
-                        "每次解锁手机时优先展示在顶部横幅",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = pinned, onCheckedChange = { pinned = it })
-            }
-
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
 
             Button(
                 onClick = {
-                    val finalRem = reminder?.let { rem ->
-                        val next = ReminderCalculator.nextOccurrence(rem, System.currentTimeMillis() - 1)
-                        rem.copy(nextAt = next)
+                    val tz = editingTodo?.reminder?.timeZone ?: defaultTimeZone
+                    val finalRem = if (reminderEnabled) {
+                        ReminderCalculator.buildReminder(pickedDate, pickedHour, pickedMinute, tz, repeat)
+                    } else {
+                        null
                     }
                     onSave(text, categoryId, finalRem, strongAlert, pinned)
                 },
                 enabled = text.isNotBlank(),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(16.dp),
+                    .height(50.dp),
+                shape = RoundedCornerShape(14.dp),
             ) {
-                Text(if (editingTodo == null) "添加待办" else "保存修改", fontWeight = FontWeight.SemiBold)
+                Text(if (editingTodo == null) "添加待办" else "保存", fontWeight = FontWeight.SemiBold)
             }
         }
-    }
-
-    if (showDatePicker) {
-        val state = rememberDatePickerState()
-        DatePickerDialog(
-            onDismissRequest = { showDatePicker = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        state.selectedDateMillis?.let { millis ->
-                            val d = Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate()
-                            val dateStr = "%04d-%02d-%02d".format(d.year, d.monthValue, d.dayOfMonth)
-                            val base = reminder ?: ReminderCalculator.quickReminderAfterMinutes(30, defaultTimeZone)
-                            val updated = base.copy(date = dateStr)
-                            val next = ReminderCalculator.nextOccurrence(updated, System.currentTimeMillis() - 1)
-                            reminder = updated.copy(nextAt = next)
-                        }
-                        showDatePicker = false
-                        showTimePicker = true
-                    },
-                ) { Text("下一步：选时间") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDatePicker = false }) { Text("取消") }
-            },
-        ) {
-            DatePicker(state = state)
-        }
-    }
-
-    if (showTimePicker) {
-        val currentParts = (reminder?.time ?: "09:00").split(":")
-        val tpState = rememberTimePickerState(
-            initialHour = currentParts.getOrNull(0)?.toIntOrNull() ?: 9,
-            initialMinute = currentParts.getOrNull(1)?.toIntOrNull() ?: 0,
-            is24Hour = true,
-        )
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showTimePicker = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val timeStr = "%02d:%02d".format(tpState.hour, tpState.minute)
-                        val base = reminder ?: ReminderCalculator.quickReminderAfterMinutes(30, defaultTimeZone)
-                        val updated = base.copy(time = timeStr)
-                        val next = ReminderCalculator.nextOccurrence(updated, System.currentTimeMillis() - 1)
-                        reminder = updated.copy(nextAt = next)
-                        showTimePicker = false
-                    },
-                ) { Text("确定") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTimePicker = false }) { Text("取消") }
-            },
-            title = { Text("选择提醒时间") },
-            text = { TimePicker(state = tpState) },
-        )
     }
 }

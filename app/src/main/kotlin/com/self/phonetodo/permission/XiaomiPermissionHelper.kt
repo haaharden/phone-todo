@@ -55,6 +55,7 @@ object XiaomiPermissionHelper {
 
     fun hasOverlayPermission(context: Context): Boolean = Settings.canDrawOverlays(context)
 
+    @Suppress("DEPRECATION")
     fun hasUsageStatsPermission(context: Context): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = appOps.unsafeCheckOpNoThrow(

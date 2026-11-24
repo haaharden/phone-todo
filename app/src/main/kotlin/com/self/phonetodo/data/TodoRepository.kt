@@ -139,9 +139,13 @@ class TodoRepository(private val context: Context) {
                 todos = current.todos.map { todo ->
                     if (todo.id != todoId) return@map todo
                     val nextDone = !todo.done
+                    val updatedReminder = todo.reminder?.let { rem ->
+                        if (nextDone) rem.copy(lastFiredAt = null) else rem
+                    }
                     todo.copy(
                         done = nextDone,
                         doneAt = if (nextDone) now else null,
+                        reminder = updatedReminder,
                         updatedAt = now,
                     )
                 },
@@ -170,7 +174,8 @@ class TodoRepository(private val context: Context) {
                     val after = maxOf(firedAt, now)
                     val next = ReminderCalculator.nextOccurrence(rem, after)
                     todo.copy(
-                        reminder = rem.copy(nextAt = next),
+                        // Keep lastFiredAt so the todo stays right in place with a red timestamp until checked off
+                        reminder = rem.copy(nextAt = next, lastFiredAt = firedAt),
                         updatedAt = now,
                     )
                 },
@@ -190,7 +195,7 @@ class TodoRepository(private val context: Context) {
                         ReminderCalculator.systemTimeZone(),
                     )
                     todo.copy(
-                        reminder = rem.copy(nextAt = snoozedAt),
+                        reminder = rem.copy(nextAt = snoozedAt, lastFiredAt = null),
                         updatedAt = now,
                     )
                 },
@@ -304,11 +309,7 @@ class TodoRepository(private val context: Context) {
 
     fun topBannerTodos(maxCount: Int): List<Todo> {
         val active = _data.value.activeTodos().filter { !it.done }
-        return active.sortedWith(
-            compareByDescending<Todo> { it.pinned }
-                .thenBy { it.reminder?.nextAt ?: Long.MAX_VALUE }
-                .thenByDescending { it.createdAt },
-        ).take(maxCount.coerceAtLeast(1))
+        return ReminderCalculator.sortPendingTodos(active).take(maxCount.coerceAtLeast(1))
     }
 
     fun pendingCount(): Int = _data.value.activeTodos().count { !it.done }

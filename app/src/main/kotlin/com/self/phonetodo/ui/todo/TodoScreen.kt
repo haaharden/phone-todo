@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +43,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,10 +54,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.data.UsageRepository
 import com.self.phonetodo.model.AppSettings
+import com.self.phonetodo.model.Category
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.model.TodoData
 import com.self.phonetodo.model.UsageOverview
 import com.self.phonetodo.reminder.ReminderCalculator
+import kotlinx.coroutines.launch
 
 @Composable
 fun TodoScreen(
@@ -76,251 +81,116 @@ fun TodoScreen(
     var showNewCatDialog by remember { mutableStateOf(false) }
     var newCatName by remember { mutableStateOf("") }
 
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
+    val scope = rememberCoroutineScope()
+
     val activeCategories = remember(todoData) { todoData.activeCategories() }
     val categoryNameMap = remember(activeCategories) { activeCategories.associate { it.id to it.name } }
     val activeTodos = remember(todoData) { todoData.activeTodos() }
-    val allPendingCount = remember(activeTodos) { activeTodos.count { !it.done } }
+    val allPending = remember(activeTodos) { ReminderCalculator.sortPendingTodos(activeTodos.filter { !it.done }) }
+    val todayPending = remember(allPending) { allPending.filter { ReminderCalculator.isTodayTodo(it) } }
 
-    val filteredTodos = remember(activeTodos, selectedCategoryFilter) {
-        when (selectedCategoryFilter) {
-            null -> activeTodos
-            "__inbox__" -> activeTodos.filter { it.categoryId == null }
-            else -> activeTodos.filter { it.categoryId == selectedCategoryFilter }
-        }
-    }
-
-    val pendingTodos = remember(filteredTodos) {
-        filteredTodos.filter { !it.done }.sortedWith(
-            compareByDescending<Todo> { it.pinned }
-                .thenBy { it.reminder?.nextAt ?: Long.MAX_VALUE }
-                .thenByDescending { it.createdAt },
-        )
-    }
-    val doneTodos = remember(filteredTodos) {
-        filteredTodos.filter { it.done }.sortedByDescending { it.doneAt ?: it.updatedAt }
-    }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 112.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        // Signature Watch-Dial Telemetry Strip (no bulky SaaS card box)
-        item(key = "telemetry_dial") {
-            WatchDialTelemetryStrip(
-                overview = usageOverview,
-                settings = settings,
-                pendingCount = allPendingCount,
-                onClick = onOpenStats,
+        // 1. Watch-Dial Telemetry Strip
+        WatchDialTelemetryStrip(
+            overview = usageOverview,
+            settings = settings,
+            pendingCount = allPending.size,
+            onClick = onOpenStats,
+        )
+
+        // 2. Quiet actionable permission nudge only when needed
+        if (!hasOverlayPermission || !isMonitorRunning) {
+            val needOverlay = !hasOverlayPermission
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.11f),
+                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (needOverlay) "未开启悬浮窗，解锁顶部胶囊已降级为通知" else "常驻监听服务未运行",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = { if (needOverlay) onRequestOverlayPermission() else onRestartMonitor() },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = if (needOverlay) "去开启" else "启动",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.secondary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. Swipeable Scope Switcher: 今日待办 <-> 全部待办
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(22.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ScopeTabHeader(
+                title = "今日待办",
+                count = todayPending.size,
+                selected = pagerState.currentPage == 0,
+                onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
+            )
+            ScopeTabHeader(
+                title = "全部待办",
+                count = allPending.size,
+                selected = pagerState.currentPage == 1,
+                onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
             )
         }
 
-        // Quiet actionable permission nudge only when needed
-        if (!hasOverlayPermission || !isMonitorRunning) {
-            item(key = "setup_nudge") {
-                val needOverlay = !hasOverlayPermission
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.11f),
-                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = if (needOverlay) {
-                                "尚未开启悬浮窗，解锁时无法弹出顶部横幅"
-                            } else {
-                                "常驻监听服务未运行，解锁计数已暂停"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(
-                            onClick = { if (needOverlay) onRequestOverlayPermission() else onRestartMonitor() },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        ) {
-                            Text(
-                                text = if (needOverlay) "去开启" else "启动",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.secondary,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Quiet minimalist category strip (no heavy outlined chips)
-        item(key = "category_strip") {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                item {
-                    CategoryTabItem(
-                        label = "全部",
-                        count = allPendingCount,
-                        selected = selectedCategoryFilter == null,
-                        onClick = { onSelectCategoryFilter(null) },
-                    )
-                }
-                item {
-                    val inboxCount = activeTodos.count { !it.done && it.categoryId == null }
-                    CategoryTabItem(
-                        label = "收集箱",
-                        count = inboxCount,
-                        selected = selectedCategoryFilter == "__inbox__",
-                        onClick = { onSelectCategoryFilter("__inbox__") },
-                    )
-                }
-                items(activeCategories, key = { it.id }) { cat ->
-                    val count = activeTodos.count { !it.done && it.categoryId == cat.id }
-                    CategoryTabItem(
-                        label = cat.name,
-                        count = count,
-                        selected = selectedCategoryFilter == cat.id,
-                        onClick = { onSelectCategoryFilter(cat.id) },
-                    )
-                }
-                item {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { showNewCatDialog = true }
-                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Rounded.Add,
-                            contentDescription = "新建分类",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(2.dp))
-                        Text(
-                            text = "分类",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-
-        // Unified Porcelain Paper Sheet for pending tasks
-        item(key = "pending_sheet") {
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (pendingTodos.isEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 38.dp),
-                        horizontalAlignment = Alignment.Start,
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = "眼下没有待办事项",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "轻触右下角加号记下一件事，或点右上角从 Super Productivity 批量迁移。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                } else {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        pendingTodos.forEachIndexed { index, todo ->
-                            TodoPaperRow(
-                                todo = todo,
-                                categoryName = if (selectedCategoryFilter == null) {
-                                    todo.categoryId?.let { categoryNameMap[it] }
-                                } else {
-                                    null
-                                },
-                                onToggle = { onToggleTodo(todo.id) },
-                                onClick = { onEditTodo(todo) },
-                            )
-                            if (index < pendingTodos.lastIndex) {
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(start = 52.dp, end = 16.dp),
-                                    thickness = 0.5.dp,
-                                    color = MaterialTheme.colorScheme.outlineVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Quiet collapsible completed sheet
-        if (doneTodos.isNotEmpty()) {
-            item(key = "done_sheet") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onToggleShowDone() }
-                            .padding(horizontal = 4.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "已完成  ${doneTodos.size}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Icon(
-                            imageVector = if (settings.showDone) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-
-                    if (settings.showDone) {
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
-                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                val shownDone = doneTodos.take(60)
-                                shownDone.forEachIndexed { index, todo ->
-                                    TodoPaperRow(
-                                        todo = todo,
-                                        categoryName = null,
-                                        onToggle = { onToggleTodo(todo.id) },
-                                        onClick = { onEditTodo(todo) },
-                                    )
-                                    if (index < shownDone.lastIndex) {
-                                        HorizontalDivider(
-                                            modifier = Modifier.padding(start = 52.dp, end = 16.dp),
-                                            thickness = 0.5.dp,
-                                            color = MaterialTheme.colorScheme.outlineVariant,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        // 4. Native HorizontalPager (swipe left/right smoothly between Today and All)
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            pageSpacing = 16.dp,
+            verticalAlignment = Alignment.Top,
+        ) { page ->
+            if (page == 0) {
+                TodayTodoPage(
+                    todayPending = todayPending,
+                    allPendingCount = allPending.size,
+                    categoryNameMap = categoryNameMap,
+                    onToggleTodo = onToggleTodo,
+                    onEditTodo = onEditTodo,
+                    onSwitchToAll = { scope.launch { pagerState.animateScrollToPage(1) } },
+                )
+            } else {
+                AllTodoPage(
+                    activeTodos = activeTodos,
+                    activeCategories = activeCategories,
+                    categoryNameMap = categoryNameMap,
+                    selectedCategoryFilter = selectedCategoryFilter,
+                    showDone = settings.showDone,
+                    onSelectCategoryFilter = onSelectCategoryFilter,
+                    onOpenNewCategory = { showNewCatDialog = true },
+                    onToggleTodo = onToggleTodo,
+                    onEditTodo = onEditTodo,
+                    onToggleShowDone = onToggleShowDone,
+                )
             }
         }
     }
@@ -357,6 +227,308 @@ fun TodoScreen(
 }
 
 @Composable
+private fun TodayTodoPage(
+    todayPending: List<Todo>,
+    allPendingCount: Int,
+    categoryNameMap: Map<String, String>,
+    onToggleTodo: (String) -> Unit,
+    onEditTodo: (Todo) -> Unit,
+    onSwitchToAll: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 112.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item(key = "today_sheet") {
+            TodoPaperSheet(
+                todos = todayPending,
+                categoryNameMap = categoryNameMap,
+                showCategoryName = true,
+                emptyTitle = "今日待办已清空",
+                emptySubtitle = if (allPendingCount > 0) {
+                    "左滑可查看全部 $allPendingCount 项待办，或轻触右下角加号记录新事项。"
+                } else {
+                    "轻触右下角加号记下一件事，或点右上角从 Super Productivity 批量迁移。"
+                },
+                emptyActionLabel = if (allPendingCount > 0) "查看全部待办" else null,
+                onEmptyAction = onSwitchToAll,
+                onToggleTodo = onToggleTodo,
+                onEditTodo = onEditTodo,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AllTodoPage(
+    activeTodos: List<Todo>,
+    activeCategories: List<Category>,
+    categoryNameMap: Map<String, String>,
+    selectedCategoryFilter: String?,
+    showDone: Boolean,
+    onSelectCategoryFilter: (String?) -> Unit,
+    onOpenNewCategory: () -> Unit,
+    onToggleTodo: (String) -> Unit,
+    onEditTodo: (Todo) -> Unit,
+    onToggleShowDone: () -> Unit,
+) {
+    val filtered = remember(activeTodos, selectedCategoryFilter) {
+        when (selectedCategoryFilter) {
+            null -> activeTodos
+            "__inbox__" -> activeTodos.filter { it.categoryId == null }
+            else -> activeTodos.filter { it.categoryId == selectedCategoryFilter }
+        }
+    }
+    val pending = remember(filtered) { ReminderCalculator.sortPendingTodos(filtered.filter { !it.done }) }
+    val done = remember(filtered) { filtered.filter { it.done }.sortedByDescending { it.doneAt ?: it.updatedAt } }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 112.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // Category Filter Row
+        item(key = "cat_strip") {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                item {
+                    CategoryPill(
+                        label = "全部",
+                        selected = selectedCategoryFilter == null,
+                        onClick = { onSelectCategoryFilter(null) },
+                    )
+                }
+                item {
+                    CategoryPill(
+                        label = "收集箱",
+                        selected = selectedCategoryFilter == "__inbox__",
+                        onClick = { onSelectCategoryFilter("__inbox__") },
+                    )
+                }
+                items(activeCategories, key = { it.id }) { cat ->
+                    CategoryPill(
+                        label = cat.name,
+                        selected = selectedCategoryFilter == cat.id,
+                        onClick = { onSelectCategoryFilter(cat.id) },
+                    )
+                }
+                item {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onOpenNewCategory)
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Add,
+                            contentDescription = "新建分类",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Spacer(Modifier.width(2.dp))
+                        Text(
+                            "分类",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Pending sheet
+        item(key = "all_sheet") {
+            TodoPaperSheet(
+                todos = pending,
+                categoryNameMap = categoryNameMap,
+                showCategoryName = selectedCategoryFilter == null,
+                emptyTitle = "暂无未完成待办",
+                emptySubtitle = "轻触右下角加号添加新待办。",
+                emptyActionLabel = null,
+                onEmptyAction = {},
+                onToggleTodo = onToggleTodo,
+                onEditTodo = onEditTodo,
+            )
+        }
+
+        // Collapsible completed section
+        if (done.isNotEmpty()) {
+            item(key = "done_section") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(onClick = onToggleShowDone)
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "已完成  ${done.size}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            imageVector = if (showDone) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+
+                    if (showDone) {
+                        TodoPaperSheet(
+                            todos = done.take(60),
+                            categoryNameMap = categoryNameMap,
+                            showCategoryName = false,
+                            emptyTitle = "",
+                            emptySubtitle = "",
+                            emptyActionLabel = null,
+                            onEmptyAction = {},
+                            onToggleTodo = onToggleTodo,
+                            onEditTodo = onEditTodo,
+                            dimSurface = true,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TodoPaperSheet(
+    todos: List<Todo>,
+    categoryNameMap: Map<String, String>,
+    showCategoryName: Boolean,
+    emptyTitle: String,
+    emptySubtitle: String,
+    emptyActionLabel: String?,
+    onEmptyAction: () -> Unit,
+    onToggleTodo: (String) -> Unit,
+    onEditTodo: (Todo) -> Unit,
+    dimSurface: Boolean = false,
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = if (dimSurface) MaterialTheme.colorScheme.surface.copy(alpha = 0.72f) else MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (todos.isEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 34.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(emptyTitle, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    emptySubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (emptyActionLabel != null) {
+                    TextButton(
+                        onClick = onEmptyAction,
+                        contentPadding = PaddingValues(0.dp),
+                    ) {
+                        Text(emptyActionLabel, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                todos.forEachIndexed { index, todo ->
+                    TodoPaperRow(
+                        todo = todo,
+                        categoryName = if (showCategoryName) todo.categoryId?.let { categoryNameMap[it] } else null,
+                        onToggle = { onToggleTodo(todo.id) },
+                        onClick = { onEditTodo(todo) },
+                    )
+                    if (index < todos.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 52.dp, end = 16.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScopeTabHeader(
+    title: String,
+    count: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = onClick,
+        ),
+        horizontalAlignment = Alignment.Start,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = "$count",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+            )
+        }
+        Spacer(Modifier.height(5.dp))
+        Box(
+            modifier = Modifier
+                .width(if (selected) 24.dp else 0.dp)
+                .height(2.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(MaterialTheme.colorScheme.primary),
+        )
+    }
+}
+
+@Composable
+private fun CategoryPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
 private fun WatchDialTelemetryStrip(
     overview: UsageOverview,
     settings: AppSettings,
@@ -383,7 +555,7 @@ private fun WatchDialTelemetryStrip(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 16.dp),
+                .padding(vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.Bottom,
         ) {
@@ -394,11 +566,7 @@ private fun WatchDialTelemetryStrip(
                     color = if (warnUnlock) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onBackground,
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "今日解锁",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("今日解锁", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Column(modifier = Modifier.weight(1.25f)) {
@@ -408,11 +576,7 @@ private fun WatchDialTelemetryStrip(
                     color = if (warnTime) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onBackground,
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "屏幕使用",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("屏幕使用", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Column(
@@ -425,15 +589,10 @@ private fun WatchDialTelemetryStrip(
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "待完成",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("待完成", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
-        // Razor-thin 2dp dial progress hairline (replaces heavy cards)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -454,64 +613,22 @@ private fun WatchDialTelemetryStrip(
 }
 
 @Composable
-private fun CategoryTabItem(
-    label: String,
-    count: Int,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick,
-            )
-            .padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (count > 0) {
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = "$count",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                )
-            }
-        }
-        Spacer(Modifier.height(5.dp))
-        Box(
-            modifier = Modifier
-                .width(if (selected) 18.dp else 0.dp)
-                .height(2.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(MaterialTheme.colorScheme.primary),
-        )
-    }
-}
-
-@Composable
 private fun TodoPaperRow(
     todo: Todo,
     categoryName: String?,
     onToggle: () -> Unit,
     onClick: () -> Unit,
 ) {
+    val reminder = todo.reminder
+    val isFiredRed = !todo.done && reminder != null && ReminderCalculator.isFiredOrOverdue(reminder)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 15.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        // Tactile precision checkbox ring
         Box(
             modifier = Modifier
                 .padding(top = 2.dp)
@@ -523,7 +640,11 @@ private fun TodoPaperRow(
                     } else {
                         Modifier.border(
                             width = 1.6.dp,
-                            color = if (todo.pinned) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline,
+                            color = when {
+                                isFiredRed -> MaterialTheme.colorScheme.error
+                                todo.pinned -> MaterialTheme.colorScheme.secondary
+                                else -> MaterialTheme.colorScheme.outline
+                            },
                             shape = CircleShape,
                         )
                     },
@@ -571,25 +692,34 @@ private fun TodoPaperRow(
                 )
             }
 
-            if (todo.reminder != null || !categoryName.isNullOrBlank()) {
+            if (reminder != null || !categoryName.isNullOrBlank()) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    todo.reminder?.let { rem ->
-                        val isStrong = todo.strongAlert && !todo.done
-                        val tint = if (isStrong) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+                    if (reminder != null) {
+                        val tint = when {
+                            todo.done -> MaterialTheme.colorScheme.onSurfaceVariant
+                            isFiredRed -> MaterialTheme.colorScheme.error
+                            todo.strongAlert -> MaterialTheme.colorScheme.secondary
+                            else -> MaterialTheme.colorScheme.primary
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = if (isStrong) Icons.Rounded.NotificationsActive else Icons.Rounded.Alarm,
+                                imageVector = if (todo.strongAlert && !todo.done) {
+                                    Icons.Rounded.NotificationsActive
+                                } else {
+                                    Icons.Rounded.Alarm
+                                },
                                 contentDescription = null,
                                 tint = tint,
                                 modifier = Modifier.size(13.dp),
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                text = ReminderCalculator.summary(rem),
+                                text = ReminderCalculator.summary(reminder),
                                 style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isFiredRed) FontWeight.SemiBold else FontWeight.Medium,
                                 color = tint,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,

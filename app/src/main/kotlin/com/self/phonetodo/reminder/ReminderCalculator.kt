@@ -3,6 +3,7 @@ package com.self.phonetodo.reminder
 import com.self.phonetodo.model.Reminder
 import com.self.phonetodo.model.Repeat
 import com.self.phonetodo.model.RepeatKind
+import com.self.phonetodo.model.Todo
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -13,7 +14,8 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 
 /**
- * Exact Kotlin port of DeskTodo's reminder.ts (IANA timeZone + DST + calendar recurrence).
+ * Single source of truth for reminder time calculation, overdue/fired status,
+ * today-vs-all filtering, and chronological task sorting (DeskTodo-compatible).
  */
 object ReminderCalculator {
 
@@ -40,31 +42,67 @@ object ReminderCalculator {
 
     fun safeZone(tz: String): ZoneId = runCatching { ZoneId.of(tz) }.getOrElse { ZoneId.of("Asia/Shanghai") }
 
-    /** Convert java.time DayOfWeek to DeskTodo convention: 0 = Sun, 1 = Mon ... 6 = Sat */
     private fun DayOfWeek.toDeskWeekday(): Int = if (this == DayOfWeek.SUNDAY) 0 else this.value
 
-    private fun mondayOf(date: LocalDate): LocalDate {
-        val offsetFromMonday = (date.dayOfWeek.value - 1).toLong()
-        return date.minusDays(offsetFromMonday)
-    }
+    private fun mondayOf(date: LocalDate): LocalDate = date.minusDays((date.dayOfWeek.value - 1).toLong())
 
-    private fun parseDate(dateStr: String): LocalDate =
-        runCatching { LocalDate.parse(dateStr) }.getOrElse { LocalDate.now() }
+    fun parseDate(dateStr: String): LocalDate = runCatching { LocalDate.parse(dateStr) }.getOrElse { LocalDate.now() }
 
-    private fun parseTime(timeStr: String): LocalTime {
+    fun parseTime(timeStr: String): LocalTime {
         val parts = timeStr.split(":")
         val h = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 9
         val m = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 0
         return LocalTime.of(h, m)
     }
 
-    private fun wallToEpochMs(date: LocalDate, time: LocalTime, zone: ZoneId): Long =
+    fun wallToEpochMs(date: LocalDate, time: LocalTime, zone: ZoneId): Long =
         ZonedDateTime.of(date, time, zone).toInstant().toEpochMilli()
 
+    fun anchorEpochMs(rem: Reminder): Long =
+        wallToEpochMs(parseDate(rem.date), parseTime(rem.time), safeZone(rem.timeZone))
+
     /**
-     * Computes next occurrence strictly after [afterEpochMs] (in Unix ms).
-     * Returns null if there is no future occurrence (e.g. one-time reminder already elapsed).
+     * Timestamp used for display and chronological ordering.
+     * Fired reminders keep their fired/anchor timestamp so they NEVER jump to the bottom!
      */
+    fun displayEpochMs(rem: Reminder): Long =
+        rem.lastFiredAt ?: rem.nextAt ?: anchorEpochMs(rem)
+
+    /** True once a reminder has fired or passed its scheduled time (renders red until checked off). */
+    fun isFiredOrOverdue(rem: Reminder, now: Long = System.currentTimeMillis()): Boolean {
+        if (rem.lastFiredAt != null) return true
+        val next = rem.nextAt ?: return true
+        return next <= now
+    }
+
+    /** Single source of truth for ordering pending todos. */
+    fun sortPendingTodos(todos: List<Todo>): List<Todo> =
+        todos.sortedWith(
+            compareByDescending<Todo> { it.pinned }
+                .thenBy { it.reminder?.let { r -> displayEpochMs(r) } ?: Long.MAX_VALUE }
+                .thenByDescending { it.createdAt },
+        )
+
+    /** Determines whether a pending todo belongs in the focused "今日待办" tab. */
+    fun isTodayTodo(todo: Todo, now: Long = System.currentTimeMillis()): Boolean {
+        if (todo.done || todo.deletedAt != null) return false
+        if (todo.pinned) return true
+
+        val localZone = ZoneId.systemDefault()
+        val today = Instant.ofEpochMilli(now).atZone(localZone).toLocalDate()
+        val endOfTodayMs = today.plusDays(1).atStartOfDay(localZone).toInstant().toEpochMilli() - 1L
+
+        val rem = todo.reminder
+        if (rem != null) {
+            // Overdue / already fired OR scheduled before midnight tonight
+            return isFiredOrOverdue(rem, now) || displayEpochMs(rem) <= endOfTodayMs
+        }
+
+        // Unscheduled todos created today appear in Today automatically
+        val createdDate = Instant.ofEpochMilli(todo.createdAt).atZone(localZone).toLocalDate()
+        return createdDate == today
+    }
+
     fun nextOccurrence(rem: Reminder, afterEpochMs: Long): Long? {
         val zone = safeZone(rem.timeZone)
         val anchor = parseDate(rem.date)
@@ -85,8 +123,7 @@ object ReminderCalculator {
                 val diffDays = ChronoUnit.DAYS.between(anchor, startDate).coerceAtLeast(0)
                 var k = diffDays / n
                 repeat(10) {
-                    val candidate = anchor.plusDays(k * n)
-                    val t = wallToEpochMs(candidate, time, zone)
+                    val t = wallToEpochMs(anchor.plusDays(k * n), time, zone)
                     if (t > afterEpochMs) return t
                     k++
                 }
@@ -100,8 +137,7 @@ object ReminderCalculator {
                     setOf(anchor.dayOfWeek.toDeskWeekday())
                 }
                 val anchorMonday = mondayOf(anchor)
-                val maxDays = 7 * n + 14
-                for (offset in 0 until maxDays) {
+                for (offset in 0 until (7 * n + 14)) {
                     val candidate = startDate.plusDays(offset.toLong())
                     val weekIndex = ChronoUnit.WEEKS.between(anchorMonday, mondayOf(candidate))
                     if (weekIndex < 0 || weekIndex % n != 0L) continue
@@ -122,8 +158,7 @@ object ReminderCalculator {
                     val y = idx / 12
                     val m = (idx % 12) + 1
                     val clampedDay = anchor.dayOfMonth.coerceAtMost(YearMonth.of(y, m).lengthOfMonth())
-                    val candidate = LocalDate.of(y, m, clampedDay)
-                    val t = wallToEpochMs(candidate, time, zone)
+                    val t = wallToEpochMs(LocalDate.of(y, m, clampedDay), time, zone)
                     if (t > afterEpochMs) return t
                     k++
                 }
@@ -135,14 +170,14 @@ object ReminderCalculator {
     fun formatIn(utcMs: Long, tz: String): String {
         val zone = safeZone(tz)
         val zdt = Instant.ofEpochMilli(utcMs).atZone(zone)
-        val wd = WEEKDAY_NAMES[zdt.dayOfWeek.toDeskWeekday()]
-        return "%d/%d 周%s %02d:%02d".format(
-            zdt.monthValue,
-            zdt.dayOfMonth,
-            wd,
-            zdt.hour,
-            zdt.minute,
-        )
+        val today = LocalDate.now(zone)
+        val datePrefix = when (zdt.toLocalDate()) {
+            today -> "今天"
+            today.plusDays(1) -> "明天"
+            today.minusDays(1) -> "昨天"
+            else -> "${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[zdt.dayOfWeek.toDeskWeekday()]}"
+        }
+        return "$datePrefix %02d:%02d".format(zdt.hour, zdt.minute)
     }
 
     fun describeRepeat(repeat: Repeat, anchorDate: String): String {
@@ -158,19 +193,19 @@ object ReminderCalculator {
                 }
                 val sorted = days.distinct().sortedBy { (it + 6) % 7 }
                 val names = sorted.joinToString("、") { "周${WEEKDAY_NAMES[it.coerceIn(0, 6)]}" }
-                "${if (n == 1) "每" else "每 $n "}周的$names"
+                "${if (n == 1) "每" else "每 $n "}周$names"
             }
             RepeatKind.MONTHLY -> if (n == 1) "每月" else "每 $n 个月"
             RepeatKind.YEARLY -> if (n == 1) "每年" else "每 $n 年"
         }
     }
 
+    /** Always displays the actual scheduled/fired timestamp (highlighted red in UI when fired). */
     fun summary(rem: Reminder): String {
-        val repeatText = if (rem.repeat.kind == RepeatKind.NONE) "" else " · ${describeRepeat(rem.repeat, rem.date)}"
-        val next = rem.nextAt ?: return if (rem.repeat.kind == RepeatKind.NONE) "已提醒" else "已结束$repeatText"
-        val sys = systemTimeZone()
-        val tzPrefix = if (rem.timeZone == sys) "" else "${tzLabel(rem.timeZone)} "
-        return "$tzPrefix${formatIn(next, rem.timeZone)}$repeatText"
+        val repeatText = if (rem.repeat.kind == RepeatKind.NONE) "" else "  ${describeRepeat(rem.repeat, rem.date)}"
+        val ts = displayEpochMs(rem)
+        val tzPrefix = if (rem.timeZone == systemTimeZone()) "" else "${tzLabel(rem.timeZone)} "
+        return "$tzPrefix${formatIn(ts, rem.timeZone)}$repeatText"
     }
 
     fun todayIn(tz: String): String {
@@ -178,35 +213,36 @@ object ReminderCalculator {
         return "%04d-%02d-%02d".format(zdt.year, zdt.monthValue, zdt.dayOfMonth)
     }
 
-    fun quickReminderAfterMinutes(minutes: Long, tz: String): Reminder {
-        val zone = safeZone(tz)
-        val target = ZonedDateTime.now(zone).plusMinutes(minutes).truncatedTo(ChronoUnit.MINUTES)
-        val date = "%04d-%02d-%02d".format(target.year, target.monthValue, target.dayOfMonth)
-        val time = "%02d:%02d".format(target.hour, target.minute)
-        return Reminder(
-            date = date,
-            time = time,
+    fun buildReminder(
+        date: LocalDate,
+        hour: Int,
+        minute: Int,
+        tz: String,
+        repeat: Repeat = Repeat(),
+    ): Reminder {
+        val dateStr = "%04d-%02d-%02d".format(date.year, date.monthValue, date.dayOfMonth)
+        val timeStr = "%02d:%02d".format(hour.coerceIn(0, 23), minute.coerceIn(0, 59))
+        val base = Reminder(
+            date = dateStr,
+            time = timeStr,
             timeZone = tz,
-            repeat = Repeat(),
-            nextAt = target.toInstant().toEpochMilli(),
+            repeat = repeat,
+            nextAt = null,
+            lastFiredAt = null,
         )
+        val next = nextOccurrence(base, System.currentTimeMillis() - 1)
+        return base.copy(nextAt = next)
+    }
+
+    fun quickReminderAfterMinutes(minutes: Long, tz: String): Reminder {
+        val target = ZonedDateTime.now(safeZone(tz)).plusMinutes(minutes).truncatedTo(ChronoUnit.MINUTES)
+        return buildReminder(target.toLocalDate(), target.hour, target.minute, tz)
     }
 
     fun quickReminderTodayOrTomorrowAt(hour: Int, minute: Int, tz: String, forceTomorrow: Boolean = false): Reminder {
-        val zone = safeZone(tz)
-        val now = ZonedDateTime.now(zone)
+        val now = ZonedDateTime.now(safeZone(tz))
         var target = now.withHour(hour).withMinute(minute).withSecond(0).withNano(0)
-        if (forceTomorrow || !target.isAfter(now)) {
-            target = target.plusDays(1)
-        }
-        val date = "%04d-%02d-%02d".format(target.year, target.monthValue, target.dayOfMonth)
-        val time = "%02d:%02d".format(target.hour, target.minute)
-        return Reminder(
-            date = date,
-            time = time,
-            timeZone = tz,
-            repeat = Repeat(),
-            nextAt = target.toInstant().toEpochMilli(),
-        )
+        if (forceTomorrow || !target.isAfter(now)) target = target.plusDays(1)
+        return buildReminder(target.toLocalDate(), target.hour, target.minute, tz)
     }
 }

@@ -6,8 +6,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -29,16 +27,6 @@ object NotificationHelper {
     const val NOTIFICATION_ID_UNLOCK_FALLBACK = 1002
     private const val BRAND_COLOR = 0xFF0F6B5B.toInt()
 
-    @Volatile
-    private var cachedLargeIcon: Bitmap? = null
-
-    private fun appLargeIcon(context: Context): Bitmap? {
-        cachedLargeIcon?.let { return it }
-        return runCatching {
-            BitmapFactory.decodeResource(context.resources, R.drawable.ic_notif_app_icon)
-        }.getOrNull()?.also { cachedLargeIcon = it }
-    }
-
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -58,7 +46,7 @@ object NotificationHelper {
             "解锁顶部提醒（悬浮窗备用）",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
-            description = "当未开启悬浮窗权限时，每次解锁以系统顶部横幅通知形式弹出提醒"
+            description = "当未开启悬浮窗权限时，每次解锁以系统顶部横幅通知形式显示今日解锁与用机时长"
             setShowBadge(false)
             enableVibration(false)
             setSound(null, null)
@@ -120,16 +108,15 @@ object NotificationHelper {
         )
 
         val timeText = UsageRepository.formatDurationShort(screenMillis)
-        val title = "解锁 ${unlocks} 次  屏幕 $timeText  待办 $pendingTodos"
-        val subtitle = if (!topTodoText.isNullOrBlank()) {
-            topTodoText
-        } else {
-            "今日待办已全部完成"
+        val title = "解锁 ${unlocks}次 · 用机 $timeText"
+        val subtitle = when {
+            !topTodoText.isNullOrBlank() -> "剩 ${pendingTodos}项 · $topTodoText"
+            pendingTodos > 0 -> "剩 ${pendingTodos}项待办"
+            else -> "今日待办已清空"
         }
 
         return NotificationCompat.Builder(context, CHANNEL_PERSISTENT)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
-            .setLargeIcon(appLargeIcon(context))
             .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(subtitle)
@@ -141,15 +128,10 @@ object NotificationHelper {
             .build()
     }
 
-    /**
-     * Fallback heads-up banner posted when SYSTEM_ALERT_WINDOW is not granted yet or blocked by ROM,
-     * so unlocking the phone STILL reliably shows today's unlock count and pending task.
-     */
     fun showUnlockFallbackNotification(
         context: Context,
         unlocks: Int,
         screenMillis: Long,
-        topTodo: Todo?,
         needsOverlayPermission: Boolean,
     ) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -158,28 +140,20 @@ object NotificationHelper {
             1002,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(MainActivity.EXTRA_OPEN_TAB, "stats")
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
         val timeStr = UsageRepository.formatDurationShort(screenMillis)
-        val title = "今日第 $unlocks 次解锁  已用 $timeStr"
-        val body = when {
-            topTodo != null && needsOverlayPermission -> "${topTodo.text}（点按钮开启悬浮窗可获更佳顶部胶囊提醒）"
-            topTodo != null -> topTodo.text
-            needsOverlayPermission -> "待办已清空（开启悬浮窗权限可体验顶部悬浮横幅）"
-            else -> "今日待办已清空，放下手机专注当下"
-        }
-
         val builder = NotificationCompat.Builder(context, CHANNEL_UNLOCK_FALLBACK)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
-            .setLargeIcon(appLargeIcon(context))
             .setColor(BRAND_COLOR)
-            .setContentTitle(title)
-            .setContentText(body)
+            .setContentTitle("今日第 $unlocks 次解锁 · 已用 $timeStr")
+            .setContentText(if (needsOverlayPermission) "开启悬浮窗后将直接以顶部轻量胶囊弹出" else "点击查看今日用机统计")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
-            .setTimeoutAfter(5_500L)
+            .setTimeoutAfter(4_500L)
             .setContentIntent(openIntent)
 
         if (needsOverlayPermission) {
@@ -193,18 +167,6 @@ object NotificationHelper {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             builder.addAction(0, "开启悬浮窗", grantIntent)
-        } else if (topTodo != null) {
-            val doneIntent = PendingIntent.getBroadcast(
-                context,
-                1004,
-                Intent(context, ReminderReceiver::class.java).apply {
-                    action = ReminderReceiver.ACTION_MARK_DONE
-                    putExtra(ReminderReceiver.EXTRA_TODO_ID, topTodo.id)
-                    putExtra(ReminderReceiver.EXTRA_NOTIF_ID, NOTIFICATION_ID_UNLOCK_FALLBACK)
-                },
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            builder.addAction(0, "标记完成", doneIntent)
         }
 
         runCatching { nm.notify(NOTIFICATION_ID_UNLOCK_FALLBACK, builder.build()) }
@@ -259,7 +221,6 @@ object NotificationHelper {
 
         val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
-            .setLargeIcon(appLargeIcon(context))
             .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(todo.text)

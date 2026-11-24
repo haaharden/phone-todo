@@ -243,15 +243,15 @@ fun SettingsScreen(
             }
 
             // 2. Top Unlock Banner settings
-            SettingsGroup(title = "解锁顶部悬浮横幅") {
+            SettingsGroup(title = "解锁顶部悬浮胶囊") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("每次解锁手机弹出顶部横幅", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("每次打开手机弹出顶部胶囊", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                         Text(
-                            "显示今日解锁次数、屏幕时长与优先待办，支持横幅内直接勾选",
+                            "仅显示今日打开手机次数与已用时长，轻触可查看详细统计",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -269,7 +269,7 @@ fun SettingsScreen(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("立即预览顶部横幅")
+                    Text("立即预览顶部胶囊")
                 }
 
                 Text(
@@ -299,22 +299,6 @@ fun SettingsScreen(
                     },
                     valueRange = 3f..12f,
                 )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("显示待办条数", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(1, 2, 3).forEach { count ->
-                            FilterChip(
-                                selected = settings.unlockBannerMaxTodos == count,
-                                onClick = { onUpdateSettings { it.copy(unlockBannerMaxTodos = count) } },
-                                label = { Text("$count 条") },
-                            )
-                        }
-                    }
-                }
 
                 Text(
                     text = "每日解锁警示阈值：${settings.dailyUnlockWarningThreshold} 次",
