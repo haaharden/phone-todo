@@ -78,8 +78,10 @@ class PhoneTodoForegroundService : Service() {
         unlockProbeJob = scope.launch {
             val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            for (waitMs in listOf(220L, 450L, 700L, 1000L)) {
-                delay(waitMs)
+            // Poll up to ~20s while screen is awake & locked so HyperOS direct fingerprint / face unlock
+            // is caught reliably even if user reads lock-screen notifications first
+            repeat(56) { idx ->
+                delay(if (idx == 0) 200L else 350L)
                 if (!awaitingUnlock) return@launch
                 if (!pm.isInteractive) return@launch
                 if (!km.isKeyguardLocked) {
@@ -117,14 +119,23 @@ class PhoneTodoForegroundService : Service() {
         app.usageRepository.ensureActiveSessionIfInteractive(pm.isInteractive && !km.isKeyguardLocked)
 
         val notification = buildCurrentNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NotificationHelper.NOTIFICATION_ID_FOREGROUND,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
-        } else {
-            startForeground(NotificationHelper.NOTIFICATION_ID_FOREGROUND, notification)
+        val started = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NotificationHelper.NOTIFICATION_ID_FOREGROUND,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NotificationHelper.NOTIFICATION_ID_FOREGROUND, notification)
+            }
+            true
+        }.getOrDefault(false)
+
+        if (!started) {
+            _isRunning.value = false
+            stopSelf()
+            return
         }
 
         registerScreenReceiver()

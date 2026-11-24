@@ -67,10 +67,6 @@ class PhoneTodoApp : Application() {
 
         reminderScheduler.syncAll(fireMissed = true)
         usageRepository.refresh()
-
-        if (settingsRepository.settings.value.keepAliveServiceEnabled) {
-            PhoneTodoForegroundService.start(this)
-        }
     }
 
     fun scheduleDebouncedSync() {
