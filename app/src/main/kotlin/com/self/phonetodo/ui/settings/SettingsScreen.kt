@@ -171,12 +171,12 @@ fun SettingsScreen(
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isMonitorRunning) "常驻监听服务运行中" else "监听服务未运行",
+                            text = if (isMonitorRunning) "后台解锁与时长监听中" else "后台监听已关闭（闹钟提醒仍正常）",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                         )
                         Text(
-                            text = "持续监听解锁事件、记录用机时长与保障闹钟触达",
+                            text = "已对锁屏隐藏且不显示待办；也可点下方单独关闭该通知通道",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -185,6 +185,14 @@ fun SettingsScreen(
                         checked = settings.keepAliveServiceEnabled,
                         onCheckedChange = onToggleKeepAlive,
                     )
+                }
+
+                OutlinedButton(
+                    onClick = { NotificationHelper.openPersistentChannelSettings(context) },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("彻底隐藏下拉栏后台通知（不影响解锁胶囊与提醒）")
                 }
 
                 HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)

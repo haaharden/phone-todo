@@ -18,7 +18,8 @@ import com.self.phonetodo.model.Todo
 
 object NotificationHelper {
 
-    const val CHANNEL_PERSISTENT = "phone_todo_persistent_v2"
+    const val CHANNEL_PERSISTENT = "phone_todo_persistent_v3"
+    private const val LEGACY_CHANNEL_PERSISTENT_V2 = "phone_todo_persistent_v2"
     const val CHANNEL_REMINDER = "phone_todo_reminder_v2"
     const val CHANNEL_STRONG_ALERT = "phone_todo_strong_alert_v2"
     const val CHANNEL_UNLOCK_FALLBACK = "phone_todo_unlock_fallback_v2"
@@ -30,15 +31,20 @@ object NotificationHelper {
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+        // Remove older persistent channel that showed on lock screen
+        runCatching { nm.deleteNotificationChannel(LEGACY_CHANNEL_PERSISTENT_V2) }
+
         val persistent = NotificationChannel(
             CHANNEL_PERSISTENT,
-            "常驻运行与今日概览",
-            NotificationManager.IMPORTANCE_LOW,
+            "后台运行保活（可关闭此项隐藏）",
+            NotificationManager.IMPORTANCE_MIN,
         ).apply {
-            description = "保持解锁提醒与准点闹钟常驻运行，实时显示今日解锁次数与用机时长"
+            description = "仅用于后台监听解锁与用机时长；可在系统通知中单独关闭此通道以彻底隐藏，不影响待办提醒与解锁胶囊"
             setShowBadge(false)
             enableLights(false)
             enableVibration(false)
+            setSound(null, null)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
         }
 
         val unlockFallback = NotificationChannel(
@@ -95,37 +101,49 @@ object NotificationHelper {
         context: Context,
         unlocks: Int,
         screenMillis: Long,
-        pendingTodos: Int,
-        topTodoText: String?,
     ): Notification {
         val openIntent = PendingIntent.getActivity(
             context,
             0,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(MainActivity.EXTRA_OPEN_TAB, "stats")
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
         val timeText = UsageRepository.formatDurationShort(screenMillis)
         val title = "解锁 ${unlocks}次 · 用机 $timeText"
-        val subtitle = when {
-            !topTodoText.isNullOrBlank() -> "剩 ${pendingTodos}项 · $topTodoText"
-            pendingTodos > 0 -> "剩 ${pendingTodos}项待办"
-            else -> "今日待办已清空"
-        }
 
         return NotificationCompat.Builder(context, CHANNEL_PERSISTENT)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
             .setColor(BRAND_COLOR)
             .setContentTitle(title)
-            .setContentText(subtitle)
-            .setOngoing(true)
+            .setOngoing(false)
             .setOnlyAlertOnce(true)
             .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(openIntent)
             .build()
+    }
+
+    fun openPersistentChannelSettings(context: Context) {
+        ensureChannels(context)
+        val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_PERSISTENT)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(intent) }.onFailure {
+            val fallback = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(fallback) }
+        }
     }
 
     fun showUnlockFallbackNotification(

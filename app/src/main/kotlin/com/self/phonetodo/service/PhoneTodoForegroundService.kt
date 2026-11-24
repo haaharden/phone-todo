@@ -187,14 +187,10 @@ class PhoneTodoForegroundService : Service() {
     private fun buildCurrentNotification() = run {
         val app = applicationContext as PhoneTodoApp
         val overview = app.usageRepository.overview.value
-        val pending = app.todoRepository.pendingCount()
-        val topText = app.todoRepository.topBannerTodos(1).firstOrNull()?.text
         NotificationHelper.buildPersistentNotification(
             context = this,
             unlocks = overview.todayUnlocks,
             screenMillis = overview.todayScreenMillis,
-            pendingTodos = pending,
-            topTodoText = topText,
         )
     }
 

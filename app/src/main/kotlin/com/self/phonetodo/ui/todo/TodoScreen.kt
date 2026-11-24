@@ -115,9 +115,10 @@ fun TodoScreen(
             onClick = onOpenStats,
         )
 
-        // 2. Quiet actionable permission nudge only when needed
-        if (!hasOverlayPermission || !isMonitorRunning) {
-            val needOverlay = !hasOverlayPermission
+        // 2. Quiet actionable permission nudge only when enabled & needed
+        val needOverlay = settings.keepAliveServiceEnabled && settings.unlockBannerEnabled && !hasOverlayPermission
+        val needMonitor = settings.keepAliveServiceEnabled && !isMonitorRunning
+        if (needOverlay || needMonitor) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.11f),
