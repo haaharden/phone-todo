@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Phone ToDo</string>
+    <string name="widget_description">查看今日待办、解锁次数与用机时长</string>
+</resources>
