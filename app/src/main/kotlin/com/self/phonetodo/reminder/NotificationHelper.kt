@@ -18,34 +18,21 @@ import com.self.phonetodo.model.Todo
 
 object NotificationHelper {
 
-    const val CHANNEL_PERSISTENT = "phone_todo_persistent_v3"
-    private const val LEGACY_CHANNEL_PERSISTENT_V2 = "phone_todo_persistent_v2"
     const val CHANNEL_REMINDER = "phone_todo_reminder_v2"
     const val CHANNEL_STRONG_ALERT = "phone_todo_strong_alert_v2"
     const val CHANNEL_UNLOCK_FALLBACK = "phone_todo_unlock_fallback_v2"
 
-    const val NOTIFICATION_ID_FOREGROUND = 1001
+    private const val LEGACY_NOTIFICATION_ID_FOREGROUND = 1001
     const val NOTIFICATION_ID_UNLOCK_FALLBACK = 1002
     private const val BRAND_COLOR = 0xFF0F6B5B.toInt()
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Remove older persistent channel that showed on lock screen
-        runCatching { nm.deleteNotificationChannel(LEGACY_CHANNEL_PERSISTENT_V2) }
-
-        val persistent = NotificationChannel(
-            CHANNEL_PERSISTENT,
-            "后台运行保活（可关闭此项隐藏）",
-            NotificationManager.IMPORTANCE_MIN,
-        ).apply {
-            description = "仅用于后台监听解锁与用机时长；可在系统通知中单独关闭此通道以彻底隐藏，不影响待办提醒与解锁胶囊"
-            setShowBadge(false)
-            enableLights(false)
-            enableVibration(false)
-            setSound(null, null)
-            lockscreenVisibility = Notification.VISIBILITY_SECRET
-        }
+        // Remove all legacy persistent service notifications & channels completely
+        runCatching { nm.cancel(LEGACY_NOTIFICATION_ID_FOREGROUND) }
+        runCatching { nm.deleteNotificationChannel("phone_todo_persistent_v2") }
+        runCatching { nm.deleteNotificationChannel("phone_todo_persistent_v3") }
 
         val unlockFallback = NotificationChannel(
             CHANNEL_UNLOCK_FALLBACK,
@@ -91,59 +78,9 @@ object NotificationHelper {
             setBypassDnd(true)
         }
 
-        nm.createNotificationChannel(persistent)
         nm.createNotificationChannel(unlockFallback)
         nm.createNotificationChannel(reminder)
         nm.createNotificationChannel(strong)
-    }
-
-    fun buildPersistentNotification(
-        context: Context,
-        unlocks: Int,
-        screenMillis: Long,
-    ): Notification {
-        val openIntent = PendingIntent.getActivity(
-            context,
-            0,
-            Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra(MainActivity.EXTRA_OPEN_TAB, "stats")
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        val timeText = UsageRepository.formatDurationShort(screenMillis)
-        val title = "解锁 ${unlocks}次 · 用机 $timeText"
-
-        return NotificationCompat.Builder(context, CHANNEL_PERSISTENT)
-            .setSmallIcon(R.drawable.ic_stat_phonetodo)
-            .setColor(BRAND_COLOR)
-            .setContentTitle(title)
-            .setOngoing(false)
-            .setOnlyAlertOnce(true)
-            .setSilent(true)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setContentIntent(openIntent)
-            .build()
-    }
-
-    fun openPersistentChannelSettings(context: Context) {
-        ensureChannels(context)
-        val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
-            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-            putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_PERSISTENT)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching { context.startActivity(intent) }.onFailure {
-            val fallback = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching { context.startActivity(fallback) }
-        }
     }
 
     fun showUnlockFallbackNotification(

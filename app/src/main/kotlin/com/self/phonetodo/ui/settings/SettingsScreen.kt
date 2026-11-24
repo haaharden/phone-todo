@@ -41,6 +41,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -56,6 +58,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -171,12 +175,12 @@ fun SettingsScreen(
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isMonitorRunning) "后台解锁与时长监听中" else "后台监听已关闭（闹钟提醒仍正常）",
+                            text = if (isMonitorRunning) "静默后台解锁监听中" else "后台解锁监听已关闭（闹钟提醒仍正常）",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                         )
                         Text(
-                            text = "已对锁屏隐藏且不显示待办；也可点下方单独关闭该通知通道",
+                            text = "无通知栏常驻卡片；后台静默统计解锁次数与弹出顶部胶囊",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -184,15 +188,8 @@ fun SettingsScreen(
                     Switch(
                         checked = settings.keepAliveServiceEnabled,
                         onCheckedChange = onToggleKeepAlive,
+                        colors = sleekSwitchColors(),
                     )
-                }
-
-                OutlinedButton(
-                    onClick = { NotificationHelper.openPersistentChannelSettings(context) },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("彻底隐藏下拉栏后台通知（不影响解锁胶囊与提醒）")
                 }
 
                 HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
@@ -227,7 +224,13 @@ fun SettingsScreen(
                         TextButton(
                             onClick = { XiaomiPermissionHelper.openPermissionPage(context, item.id) },
                         ) {
-                            Text(if (item.granted == true) "已开启" else "去开启")
+                            Text(
+                                when (item.granted) {
+                                    true -> "已开启"
+                                    false -> "去开启"
+                                    null -> "去检查"
+                                },
+                            )
                         }
                     }
                     if (idx < checkList.lastIndex) {
@@ -277,6 +280,7 @@ fun SettingsScreen(
                         onCheckedChange = { enabled ->
                             onUpdateSettings { it.copy(unlockBannerEnabled = enabled) }
                         },
+                        colors = sleekSwitchColors(),
                     )
                 }
 
@@ -593,6 +597,19 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+@Composable
+private fun sleekSwitchColors(): SwitchColors {
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    return SwitchDefaults.colors(
+        checkedThumbColor = Color.White,
+        checkedTrackColor = MaterialTheme.colorScheme.primary,
+        checkedBorderColor = Color.Transparent,
+        uncheckedThumbColor = if (isDark) Color(0xFFDCE4E2) else Color.White,
+        uncheckedTrackColor = if (isDark) Color(0xFF2D3740) else Color(0xFFD9E0DC),
+        uncheckedBorderColor = if (isDark) Color(0xFF53626E) else Color(0xFFB6C1BC),
+    )
 }
 
 @Composable

@@ -1,14 +1,11 @@
 package com.self.phonetodo.service
 
 import android.app.KeyguardManager
-import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
@@ -27,11 +24,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Persistent foreground service keeping unlock detection, exact screen-time tracking,
- * live status notification, and reliable alarms alive on Xiaomi HyperOS.
- *
- * Dual-path unlock detection handles Xiaomi's under-display fingerprint direct unlock
- * where ACTION_USER_PRESENT is occasionally skipped or fires before keyguard dismissal settles.
+ * Silent background listener service for unlock detection, top unlock capsule, and screen-time tracking.
+ * Runs cleanly without posting any persistent notification in the shade or lock screen.
  */
 class PhoneTodoForegroundService : Service() {
 
@@ -54,7 +48,6 @@ class PhoneTodoForegroundService : Service() {
                     unlockProbeJob?.cancel()
                     app.usageRepository.recordScreenOff()
                     app.unlockBannerController.dismissAnimated()
-                    updatePersistentNotification()
                     app.refreshWidgetAsync()
                 }
 
@@ -64,7 +57,6 @@ class PhoneTodoForegroundService : Service() {
 
                 Intent.ACTION_SCREEN_ON -> {
                     app.reminderScheduler.syncAll(fireMissed = true)
-                    updatePersistentNotification()
                     // Probe keyguard state on Xiaomi HyperOS in case direct fingerprint unlock
                     // or no-lock-screen bypasses ACTION_USER_PRESENT
                     probeKeyguardUnlock(app)
@@ -78,8 +70,6 @@ class PhoneTodoForegroundService : Service() {
         unlockProbeJob = scope.launch {
             val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            // Poll up to ~20s while screen is awake & locked so HyperOS direct fingerprint / face unlock
-            // is caught reliably even if user reads lock-screen notifications first
             repeat(56) { idx ->
                 delay(if (idx == 0) 200L else 350L)
                 if (!awaitingUnlock) return@launch
@@ -95,7 +85,6 @@ class PhoneTodoForegroundService : Service() {
     @Synchronized
     private fun handlePhoneUnlocked(app: PhoneTodoApp) {
         val now = System.currentTimeMillis()
-        // Prevent double-trigger if both ACTION_USER_PRESENT and SCREEN_ON keyguard probe fire
         if (now - lastUnlockHandledAt < 2_000L) return
         lastUnlockHandledAt = now
         awaitingUnlock = false
@@ -103,7 +92,6 @@ class PhoneTodoForegroundService : Service() {
 
         app.usageRepository.recordUnlock(now)
         app.unlockBannerController.onPhoneUnlocked(forcePreview = false)
-        updatePersistentNotification()
         app.refreshWidgetAsync()
     }
 
@@ -118,33 +106,12 @@ class PhoneTodoForegroundService : Service() {
         awaitingUnlock = !pm.isInteractive || km.isKeyguardLocked
         app.usageRepository.ensureActiveSessionIfInteractive(pm.isInteractive && !km.isKeyguardLocked)
 
-        val notification = buildCurrentNotification()
-        val started = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    NotificationHelper.NOTIFICATION_ID_FOREGROUND,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
-            } else {
-                startForeground(NotificationHelper.NOTIFICATION_ID_FOREGROUND, notification)
-            }
-            true
-        }.getOrDefault(false)
-
-        if (!started) {
-            _isRunning.value = false
-            stopSelf()
-            return
-        }
-
         registerScreenReceiver()
         startPeriodicTick()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         _isRunning.value = true
-        updatePersistentNotification()
         return START_STICKY
     }
 
@@ -179,25 +146,7 @@ class PhoneTodoForegroundService : Service() {
                 val app = applicationContext as PhoneTodoApp
                 app.usageRepository.refresh()
                 app.reminderScheduler.syncAll(fireMissed = true)
-                updatePersistentNotification()
             }
-        }
-    }
-
-    private fun buildCurrentNotification() = run {
-        val app = applicationContext as PhoneTodoApp
-        val overview = app.usageRepository.overview.value
-        NotificationHelper.buildPersistentNotification(
-            context = this,
-            unlocks = overview.todayUnlocks,
-            screenMillis = overview.todayScreenMillis,
-        )
-    }
-
-    private fun updatePersistentNotification() {
-        runCatching {
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NotificationHelper.NOTIFICATION_ID_FOREGROUND, buildCurrentNotification())
         }
     }
 
@@ -208,7 +157,7 @@ class PhoneTodoForegroundService : Service() {
         fun start(context: Context) {
             runCatching {
                 val intent = Intent(context, PhoneTodoForegroundService::class.java)
-                ContextCompat.startForegroundService(context, intent)
+                context.startService(intent)
             }
         }
 

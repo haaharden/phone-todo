@@ -21,7 +21,11 @@ private val LightColors = lightColorScheme(
     onSurface = GraphiteInk,
     surfaceVariant = VellumSubtle,
     onSurfaceVariant = PewterMuted,
-    outline = Color(0xFFCFD6D2),
+    surfaceContainerLow = Color(0xFFF3F5F2),
+    surfaceContainer = Color(0xFFECEFEA),
+    surfaceContainerHigh = Color(0xFFE3E8E4),
+    surfaceContainerHighest = Color(0xFFD9E0DC),
+    outline = Color(0xFFB8C2BD),
     outlineVariant = HairlineLight,
     error = SignalRed,
 )
@@ -39,7 +43,11 @@ private val DarkColors = darkColorScheme(
     onSurface = StarlightInk,
     surfaceVariant = ObsidianSubtle,
     onSurfaceVariant = DialMuted,
-    outline = Color(0xFF2E383E),
+    surfaceContainerLow = Color(0xFF151B20),
+    surfaceContainer = Color(0xFF1A2227),
+    surfaceContainerHigh = Color(0xFF222C33),
+    surfaceContainerHighest = Color(0xFF2B3740),
+    outline = Color(0xFF4F5D66),
     outlineVariant = HairlineDark,
     error = Color(0xFFF06C6C),
 )
@@ -48,6 +56,7 @@ private val AmoledColors = DarkColors.copy(
     background = OledGround,
     surface = OledSurface,
     surfaceVariant = OledSubtle,
+    surfaceContainerHighest = Color(0xFF29343D),
 )
 
 @Composable

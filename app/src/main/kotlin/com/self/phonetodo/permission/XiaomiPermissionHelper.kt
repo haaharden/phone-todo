@@ -110,9 +110,9 @@ object XiaomiPermissionHelper {
             PermissionCheckItem(
                 id = "battery",
                 title = "省电策略：无限制",
-                subtitle = "防止系统在后台冻结服务与计时",
+                subtitle = if (isXiaomiDevice()) "防止系统在后台冻结服务，建议同时在多任务下拉加锁" else "防止系统在后台冻结服务与计时",
                 granted = isIgnoringBatteryOptimizations(context),
-                requiredFor = "全天常驻运行",
+                requiredFor = "全天后台运行",
             ),
             PermissionCheckItem(
                 id = "fullscreen",
@@ -126,7 +126,7 @@ object XiaomiPermissionHelper {
             list += PermissionCheckItem(
                 id = "xiaomi_autostart",
                 title = "小米自启动",
-                subtitle = "HyperOS 必开：允许开机与后台自动拉起服务",
+                subtitle = "系统私有项无法自动检测；已开启即生效，允许开机与后台拉起",
                 granted = null,
                 requiredFor = "小米 13 Ultra 专项保活",
                 isXiaomiSpecific = true,
@@ -134,17 +134,9 @@ object XiaomiPermissionHelper {
             list += PermissionCheckItem(
                 id = "xiaomi_bg_popup",
                 title = "小米后台弹出界面 & 锁屏显示",
-                subtitle = "HyperOS 必开：在「其他权限」中勾选后台弹出界面与锁屏显示",
+                subtitle = "系统私有项无法自动检测；在「其他权限」中勾选即可",
                 granted = null,
                 requiredFor = "小米 13 Ultra 弹窗必备",
-                isXiaomiSpecific = true,
-            )
-            list += PermissionCheckItem(
-                id = "xiaomi_battery_policy",
-                title = "小米省电策略页",
-                subtitle = "手动选择「无限制」，并在多任务界面下拉锁定本应用",
-                granted = null,
-                requiredFor = "小米 13 Ultra 专项保活",
                 isXiaomiSpecific = true,
             )
         }
@@ -182,12 +174,21 @@ object XiaomiPermissionHelper {
                     data = Uri.parse("package:${context.packageName}")
                 },
             ) || startSafe(context, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-            "battery" -> startSafe(
-                context,
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:${context.packageName}")
-                },
-            )
+            "battery" -> if (isXiaomiDevice()) {
+                openXiaomiBatterySaver(context) || startSafe(
+                    context,
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    },
+                )
+            } else {
+                startSafe(
+                    context,
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    },
+                )
+            }
             "fullscreen" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startSafe(
                     context,
