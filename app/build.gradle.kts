@@ -20,8 +20,8 @@ android {
     applicationId = "com.self.phonetodo"
     minSdk = 29
     targetSdk = 35
-    versionCode = 10
-    versionName = "1.2.5"
+    versionCode = 11
+    versionName = "1.2.6"
   }
 
   signingConfigs {

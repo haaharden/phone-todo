@@ -43,7 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.importer.ImportPreview
-import com.self.phonetodo.importer.SuperProductivityImporter
+import com.self.phonetodo.importer.TodoDataPort
 import com.self.phonetodo.model.Category
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.ui.theme.JadeOk
@@ -69,8 +69,13 @@ fun ImportScreen(
     fun parseRaw(raw: String) {
         errorMsg = null
         resultBanner = null
-        SuperProductivityImporter.parse(raw, existingTodoIds, defaultTimeZone)
-            .onSuccess { preview = it }
+        TodoDataPort.parse(raw, existingTodoIds, defaultTimeZone)
+            .onSuccess { p ->
+                preview = p
+                includeActive = true
+                includeRepeat = true
+                includeArchived = p.activeTodos.isEmpty() && p.repeatTodos.isEmpty() && p.archivedTodos.isNotEmpty()
+            }
             .onFailure {
                 preview = null
                 errorMsg = it.message ?: "解析失败"
@@ -98,7 +103,7 @@ fun ImportScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                 ),
-                title = { Text("导入 Super Productivity", fontWeight = FontWeight.SemiBold) },
+                title = { Text("导入数据", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
@@ -126,11 +131,11 @@ fun ImportScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        text = "从导出文件批量迁移",
+                        text = "从通用文件导入",
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        text = "在 Super Productivity 选择「设置 → 同步与导出 → 导入/导出 → 导出数据」，导入生成的 JSON 备份或 Worklog CSV 日志。",
+                        text = "支持标准 JSON 备份、CSV 表格（title, done, category, reminder_date, reminder_time...）以及 Markdown / 纯文本清单，导入前会自动预览并去重。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -141,7 +146,7 @@ fun ImportScreen(
                     ) {
                         Icon(Icons.Rounded.FileUpload, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("选择备份或日志文件")
+                        Text("选择 JSON / CSV / 文本文件")
                     }
                 }
             }
@@ -157,13 +162,13 @@ fun ImportScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        text = "或直接粘贴日志文本",
+                        text = "或直接粘贴内容",
                         style = MaterialTheme.typography.titleMedium,
                     )
                     OutlinedTextField(
                         value = pastedText,
                         onValueChange = { pastedText = it },
-                        placeholder = { Text("粘贴 JSON / CSV 日志，或每行一条待办") },
+                        placeholder = { Text("粘贴 JSON / CSV，或每行一条待办（支持 - [ ] 清单）") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 4,
                         maxLines = 8,
@@ -234,17 +239,23 @@ fun ImportScreen(
                             Text(w, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         }
 
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = includeActive, onCheckedChange = { includeActive = it })
-                            Text("导入活跃待办（${p.activeTodos.size} 条）")
+                        if (p.activeTodos.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = includeActive, onCheckedChange = { includeActive = it })
+                                Text("导入未完成待办（${p.activeTodos.size} 条）")
+                            }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = includeRepeat, onCheckedChange = { includeRepeat = it })
-                            Text("导入重复任务（${p.repeatTodos.size} 条）")
+                        if (p.repeatTodos.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = includeRepeat, onCheckedChange = { includeRepeat = it })
+                                Text("导入重复待办（${p.repeatTodos.size} 条）")
+                            }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = includeArchived, onCheckedChange = { includeArchived = it })
-                            Text("同时导入历史归档日志（${p.archivedTodos.size} 条）")
+                        if (p.archivedTodos.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = includeArchived, onCheckedChange = { includeArchived = it })
+                                Text("同时导入已完成 / 历史记录（${p.archivedTodos.size} 条）")
+                            }
                         }
 
                         val selectedTodos = buildList {

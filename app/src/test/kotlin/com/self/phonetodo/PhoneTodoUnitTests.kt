@@ -1,6 +1,6 @@
 package com.self.phonetodo
 
-import com.self.phonetodo.importer.SuperProductivityImporter
+import com.self.phonetodo.importer.TodoDataPort
 import com.self.phonetodo.model.Category
 import com.self.phonetodo.model.Reminder
 import com.self.phonetodo.model.Repeat
@@ -66,52 +66,74 @@ class PhoneTodoUnitTests {
     }
 
     @Test
-    fun superProductivityImporter_parsesCompleteJsonBackupAndDeduplicates() {
+    fun todoDataPort_roundTripsStandardJsonAndCsvAndSupportsLegacyBackups() {
+        val original = TodoData(
+            version = 3,
+            categories = listOf(Category("c1", "研发工作", updatedAt = 100L)),
+            todos = listOf(
+                Todo(
+                    id = "t1",
+                    text = "提交周报, 含 \"复盘\"",
+                    done = false,
+                    createdAt = 1730000000000L,
+                    categoryId = "c1",
+                    reminder = Reminder("2026-11-25", "09:30", "Asia/Shanghai", Repeat(RepeatKind.DAILY, 1)),
+                    pinned = true,
+                    strongAlert = true,
+                ),
+                Todo(
+                    id = "t2",
+                    text = "已完成项",
+                    done = true,
+                    createdAt = 1730000005000L,
+                    doneAt = 1730000010000L,
+                ),
+            ),
+        )
+
+        // 1. Standard JSON export -> import round-trip
+        val jsonStr = TodoDataPort.exportJson(original)
+        val jsonPreview = TodoDataPort.parse(jsonStr, emptySet(), "Asia/Shanghai").getOrThrow()
+        assertEquals("标准 JSON 备份", jsonPreview.sourceType)
+        assertEquals(1, jsonPreview.categories.size)
+        assertEquals(1, jsonPreview.repeatTodos.size)
+        assertEquals(1, jsonPreview.archivedTodos.size)
+        assertEquals("提交周报, 含 \"复盘\"", jsonPreview.repeatTodos.first().text)
+
+        // 2. Standard CSV export -> import round-trip (preserves quotes/commas/category/reminder)
+        val csvStr = TodoDataPort.exportCsv(original)
+        val csvPreview = TodoDataPort.parse(csvStr, emptySet(), "Asia/Shanghai").getOrThrow()
+        assertEquals("标准 CSV 表格", csvPreview.sourceType)
+        assertEquals(1, csvPreview.categories.size)
+        assertEquals("研发工作", csvPreview.categories.first().name)
+        assertEquals(1, csvPreview.repeatTodos.size)
+        assertEquals("提交周报, 含 \"复盘\"", csvPreview.repeatTodos.first().text)
+        assertTrue(csvPreview.repeatTodos.first().pinned)
+        assertTrue(csvPreview.repeatTodos.first().strongAlert)
+        assertEquals(1, csvPreview.archivedTodos.size)
+
+        // 3. Silent compatibility with entity-store JSON backup
         val sampleJson = """
             {
-              "project": {
-                "ids": ["p1"],
-                "entities": {
-                  "p1": { "id": "p1", "title": "研发工作" }
-                }
-              },
+              "project": { "ids": ["p1"], "entities": { "p1": { "id": "p1", "title": "研发工作" } } },
               "task": {
                 "ids": ["t1", "t2"],
                 "entities": {
-                  "t1": { "id": "t1", "title": "提交周报", "isDone": false, "created": 1730000000000, "projectId": "p1", "priority": 3 },
+                  "t1": { "id": "t1", "title": "提交周报", "isDone": false, "created": 1730000000000, "projectId": "p1" },
                   "t2": { "id": "t2", "title": "子任务检查", "parentId": "t1", "isDone": false, "created": 1730000005000, "projectId": "p1" }
                 }
               },
-              "archiveYoung": {
-                "task": {
-                  "ids": ["a1"],
-                  "entities": {
-                    "a1": { "id": "a1", "title": "上周已完成", "isDone": true, "created": 1729000000000, "doneOn": 1729001000000 }
-                  }
-                }
-              },
-              "taskRepeatCfg": {
-                "ids": ["r1"],
-                "entities": {
-                  "r1": { "id": "r1", "title": "每日站会", "isPaused": false, "repeatCycle": "WEEKLY", "repeatEvery": 1, "monday": true, "wednesday": true, "startTime": "10:00", "projectId": "p1" }
-                }
-              }
+              "archiveYoung": { "task": { "ids": ["a1"], "entities": { "a1": { "id": "a1", "title": "上周已完成", "isDone": true, "created": 1729000000000, "doneOn": 1729001000000 } } } },
+              "taskRepeatCfg": { "ids": ["r1"], "entities": { "r1": { "id": "r1", "title": "每日站会", "isPaused": false, "repeatCycle": "WEEKLY", "repeatEvery": 1, "monday": true, "startTime": "10:00", "projectId": "p1" } } }
             }
         """.trimIndent()
-
-        val preview = SuperProductivityImporter.parse(
-            rawContent = sampleJson,
-            existingTodoIds = setOf("sp_task_t1"),
-            defaultTimeZone = "Asia/Shanghai",
-        ).getOrThrow()
-
-        assertEquals(1, preview.categories.size)
-        assertEquals("研发工作", preview.categories.first().name)
-        assertEquals(1, preview.activeTodos.size)
-        assertEquals("[提交周报] 子任务检查", preview.activeTodos.first().text)
-        assertEquals(1, preview.archivedTodos.size)
-        assertEquals(1, preview.repeatTodos.size)
-        assertEquals(1, preview.skippedDuplicateCount)
+        val legacyPreview = TodoDataPort.parse(sampleJson, setOf("sp_task_t1"), "Asia/Shanghai").getOrThrow()
+        assertEquals("任务备份 JSON", legacyPreview.sourceType)
+        assertEquals(1, legacyPreview.activeTodos.size)
+        assertEquals("[提交周报] 子任务检查", legacyPreview.activeTodos.first().text)
+        assertEquals(1, legacyPreview.archivedTodos.size)
+        assertEquals(1, legacyPreview.repeatTodos.size)
+        assertEquals(1, legacyPreview.skippedDuplicateCount)
     }
 
     @Test

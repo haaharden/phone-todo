@@ -1,6 +1,9 @@
 package com.self.phonetodo.ui.settings
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -69,20 +72,24 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.self.phonetodo.BuildConfig
+import com.self.phonetodo.importer.TodoDataPort
 import com.self.phonetodo.model.AppSettings
 import com.self.phonetodo.model.ThemeMode
+import com.self.phonetodo.model.TodoData
 import com.self.phonetodo.permission.XiaomiPermissionHelper
 import com.self.phonetodo.reminder.NotificationHelper
 import com.self.phonetodo.ui.theme.JadeOk
 import com.self.phonetodo.update.AppUpdater
 import com.self.phonetodo.update.ReleaseUpdateInfo
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
+    todoData: TodoData,
     hasSavedGithubToken: Boolean,
     isMonitorRunning: Boolean,
     latestRelease: ReleaseUpdateInfo?,
@@ -93,11 +100,46 @@ fun SettingsScreen(
     onGithubConnectAndSync: suspend (repo: String, token: String) -> Result<String>,
     onGithubSyncNow: suspend () -> Result<String>,
     onGithubDisconnect: () -> Unit,
+    onOpenImport: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    val exportJsonLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                val payload = TodoDataPort.exportJson(todoData)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(payload.toByteArray(Charsets.UTF_8))
+                } ?: error("无法写入所选文件")
+            }.onSuccess {
+                Toast.makeText(context, "已导出 JSON 备份（${todoData.activeTodos().size} 条待办）", Toast.LENGTH_SHORT).show()
+            }.onFailure { err ->
+                Toast.makeText(context, "导出失败：${err.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val exportCsvLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                val payload = TodoDataPort.exportCsv(todoData)
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(payload.toByteArray(Charsets.UTF_8))
+                } ?: error("无法写入所选文件")
+            }.onSuccess {
+                Toast.makeText(context, "已导出 CSV 表格（${todoData.activeTodos().size} 条待办）", Toast.LENGTH_SHORT).show()
+            }.onFailure { err ->
+                Toast.makeText(context, "导出失败：${err.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     var checkList by remember { mutableStateOf(XiaomiPermissionHelper.getCheckList(context)) }
     var syncRepoInput by remember(settings.githubSyncRepo) { mutableStateOf(settings.githubSyncRepo) }
@@ -575,7 +617,44 @@ fun SettingsScreen(
                 }
             }
 
-            // 5. Theme
+            // 5. Universal Data Import & Export (JSON / CSV / Markdown)
+            SettingsGroup(title = "数据导入与导出（通用格式）") {
+                Text(
+                    text = "支持标准 JSON 完整备份、CSV 表格以及 Markdown / 纯文本清单，导出文件可直接在表格或电脑端通用。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { exportJsonLauncher.launch("todos-${LocalDate.now()}.json") },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("导出 JSON")
+                    }
+                    OutlinedButton(
+                        onClick = { exportCsvLauncher.launch("todos-${LocalDate.now()}.csv") },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("导出 CSV")
+                    }
+                }
+
+                Button(
+                    onClick = onOpenImport,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("导入数据（JSON / CSV / 文本）")
+                }
+            }
+
+            // 6. Theme
             SettingsGroup(title = "外观") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     val modes = listOf(

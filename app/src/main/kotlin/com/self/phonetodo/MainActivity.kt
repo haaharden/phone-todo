@@ -31,7 +31,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Icon
@@ -257,14 +256,6 @@ private fun PhoneTodoRoot(
                     }
                 }
 
-                IconButton(onClick = { overlayPage = OverlayPage.IMPORT }) {
-                    Icon(
-                        Icons.Rounded.FileUpload,
-                        contentDescription = "导入",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
                 IconButton(onClick = { overlayPage = OverlayPage.SETTINGS }) {
                     Box {
                         Icon(
@@ -385,9 +376,11 @@ private fun PhoneTodoRoot(
             }
         }
 
-        // Secondary full-screen overlay pages with system back-gesture support
+        // Secondary full-screen overlay pages with layered back-gesture support (Import -> Settings -> Home)
         if (overlayPage != OverlayPage.NONE) {
-            BackHandler { overlayPage = OverlayPage.NONE }
+            BackHandler {
+                overlayPage = if (overlayPage == OverlayPage.IMPORT) OverlayPage.SETTINGS else OverlayPage.NONE
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -402,7 +395,7 @@ private fun PhoneTodoRoot(
                     OverlayPage.IMPORT -> ImportScreen(
                         existingTodoIds = todoData.todos.map { it.id }.toSet(),
                         defaultTimeZone = settings.defaultTimeZone,
-                        onBack = { overlayPage = OverlayPage.NONE },
+                        onBack = { overlayPage = OverlayPage.SETTINGS },
                         onConfirmImport = { cats, todos ->
                             app.todoRepository.bulkImport(cats, todos)
                         },
@@ -410,6 +403,7 @@ private fun PhoneTodoRoot(
 
                     OverlayPage.SETTINGS -> SettingsScreen(
                         settings = settings,
+                        todoData = todoData,
                         hasSavedGithubToken = app.settingsRepository.hasGithubToken(),
                         isMonitorRunning = isMonitorRunning,
                         latestRelease = latestRelease,
@@ -433,6 +427,7 @@ private fun PhoneTodoRoot(
                         },
                         onGithubSyncNow = { app.githubSyncManager.syncNow() },
                         onGithubDisconnect = { app.githubSyncManager.disconnect() },
+                        onOpenImport = { overlayPage = OverlayPage.IMPORT },
                         onBack = { overlayPage = OverlayPage.NONE },
                     )
 

@@ -341,7 +341,7 @@ private fun TodayTodoPage(
                     emptySubtitle = when {
                         pastCarryover.isNotEmpty() -> "先清掉上方的往日遗留，或轻触右下角加号记下今天的计划。"
                         allPendingCount > 0 -> "左滑可查看全部 $allPendingCount 项待办，或轻触右下角加号记录新事项。"
-                        else -> "轻触右下角加号记下一件事，或点右上角从 Super Productivity 批量迁移。"
+                        else -> "轻触右下角加号记下一件事，或在设置中导入备份。"
                     },
                     emptyActionLabel = if (todayOnly.isEmpty() && pastCarryover.isEmpty() && allPendingCount > 0) "查看全部待办" else null,
                     onEmptyAction = onSwitchToAll,
