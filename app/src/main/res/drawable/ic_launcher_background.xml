@@ -1,27 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path android:pathData="M0,0h108v108h-108z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:endX="96"
-                android:endY="102"
-                android:startX="12"
-                android:startY="6"
-                android:type="linear">
-                <item android:color="#192328" android:offset="0.0" />
-                <item android:color="#0D1215" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-    <!-- Subtle precision instrument ring -->
+    <!-- Pure solid fill (no aapt:attr gradient) so HyperOS SystemUI never falls back to default Android robot -->
+    <path
+        android:fillColor="#12181C"
+        android:pathData="M0,0h108v108h-108z" />
     <path
         android:fillColor="#00000000"
         android:pathData="M54,18 A36,36 0 1,1 53.99,18 Z"
         android:strokeWidth="0.9"
-        android:strokeColor="#223DB59E" />
+        android:strokeColor="#263DB59E" />
 </vector>

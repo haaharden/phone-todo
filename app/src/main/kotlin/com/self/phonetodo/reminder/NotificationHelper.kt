@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -25,6 +27,17 @@ object NotificationHelper {
 
     const val NOTIFICATION_ID_FOREGROUND = 1001
     const val NOTIFICATION_ID_UNLOCK_FALLBACK = 1002
+    private const val BRAND_COLOR = 0xFF0F6B5B.toInt()
+
+    @Volatile
+    private var cachedLargeIcon: Bitmap? = null
+
+    private fun appLargeIcon(context: Context): Bitmap? {
+        cachedLargeIcon?.let { return it }
+        return runCatching {
+            BitmapFactory.decodeResource(context.resources, R.drawable.ic_notif_app_icon)
+        }.getOrNull()?.also { cachedLargeIcon = it }
+    }
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -116,6 +129,8 @@ object NotificationHelper {
 
         return NotificationCompat.Builder(context, CHANNEL_PERSISTENT)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
+            .setLargeIcon(appLargeIcon(context))
+            .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(subtitle)
             .setOngoing(true)
@@ -158,6 +173,8 @@ object NotificationHelper {
 
         val builder = NotificationCompat.Builder(context, CHANNEL_UNLOCK_FALLBACK)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
+            .setLargeIcon(appLargeIcon(context))
+            .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -242,6 +259,8 @@ object NotificationHelper {
 
         val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
+            .setLargeIcon(appLargeIcon(context))
+            .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(todo.text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(todo.text))
