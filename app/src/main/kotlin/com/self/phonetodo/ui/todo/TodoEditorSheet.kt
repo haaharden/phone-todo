@@ -81,8 +81,7 @@ fun TodoEditorSheet(
     }
 
     val initialDate = remember(editingTodo) {
-        editingTodo?.reminder?.let { ReminderCalculator.parseDate(it.date) }?.takeIf { !it.isBefore(LocalDate.now()) }
-            ?: defaultZdt.toLocalDate()
+        editingTodo?.reminder?.let { ReminderCalculator.parseDate(it.date) } ?: defaultZdt.toLocalDate()
     }
     val initialTime = remember(editingTodo) {
         editingTodo?.reminder?.let { ReminderCalculator.parseTime(it.time) } ?: defaultZdt.toLocalTime()
@@ -255,11 +254,9 @@ fun TodoEditorSheet(
                         selectedDate = pickedDate,
                         selectedHour = pickedHour,
                         selectedMinute = pickedMinute,
-                        onDateTimeChanged = { d, h, m ->
-                            pickedDate = d
-                            pickedHour = h
-                            pickedMinute = m
-                        },
+                        onDateChanged = { pickedDate = it },
+                        onHourChanged = { pickedHour = it },
+                        onMinuteChanged = { pickedMinute = it },
                     )
 
                     // Compact inline repeat picker

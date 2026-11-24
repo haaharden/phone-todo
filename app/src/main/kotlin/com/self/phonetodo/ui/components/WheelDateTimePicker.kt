@@ -7,7 +7,9 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.snapping.SnapPosition
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -49,7 +52,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
@@ -60,23 +62,38 @@ import kotlin.math.abs
  * Tactile dual-mode precision wheel picker rendered inline in a single sheet:
  * - Compact mode (default): [Date (90-day window) | Hour : Minute] for rapid near-term selection
  * - Expanded Y/M/D mode (tap the date header pill): [Year | Month | Day] for instant far-future jumps
+ *
+ * Uses SnapPosition.Start aligned with vertical itemHeight contentPadding so item offset == 0
+ * maps pixel-for-pixel to the center focus band, and reports live per-column updates without
+ * cross-column races.
  */
 @Composable
 fun WheelDateTimePicker(
     selectedDate: LocalDate,
     selectedHour: Int,
     selectedMinute: Int,
-    onDateTimeChanged: (LocalDate, Int, Int) -> Unit,
+    onDateChanged: (LocalDate) -> Unit,
+    onHourChanged: (Int) -> Unit,
+    onMinuteChanged: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val today = remember { LocalDate.now() }
     var expandYearMonthDay by remember { mutableStateOf(false) }
 
-    // Smart 90-day quick window: starts at today for near dates, or centers around far-future dates
-    val windowStart = remember(selectedDate, today) {
-        val diff = ChronoUnit.DAYS.between(today, selectedDate)
-        if (diff in 0..89) today else maxOf(today, selectedDate.minusDays(30))
+    // Anchor quick-mode 90-day window ONLY when entering quick mode or when selectedDate leaves current window
+    // (never shift windowStart while the user is actively scrolling inside the current 90-day window!).
+    var windowStart by remember(today) {
+        mutableStateOf(computeQuickWindowStart(selectedDate, today))
     }
+    LaunchedEffect(selectedDate, expandYearMonthDay) {
+        if (!expandYearMonthDay) {
+            val diffFromWindow = ChronoUnit.DAYS.between(windowStart, selectedDate)
+            if (diffFromWindow < 0 || diffFromWindow >= 90) {
+                windowStart = computeQuickWindowStart(selectedDate, today)
+            }
+        }
+    }
+
     val dates = remember(windowStart) { List(90) { windowStart.plusDays(it.toLong()) } }
     val dateLabels = remember(dates, today) { dates.map { formatDateWheelLabel(it, today) } }
     val dateIndex = remember(selectedDate, dates) {
@@ -86,8 +103,8 @@ fun WheelDateTimePicker(
     val hourLabels = remember { List(24) { "%02d".format(it) } }
     val minuteLabels = remember { List(60) { "%02d".format(it) } }
 
-    // Year / Month / Day wheel ranges (today.year .. today.year + 10)
-    val minYear = remember(today) { minOf(today.year, selectedDate.year) }
+    // Year / Month / Day wheel ranges
+    val minYear = remember(today, selectedDate.year) { minOf(today.year, selectedDate.year) }
     val years = remember(minYear, today) { (minYear..(today.year + 10)).toList() }
     val yearLabels = remember(years) { years.map { "${it}年" } }
     val monthLabels = remember { (1..12).map { "${it}月" } }
@@ -205,9 +222,9 @@ fun WheelDateTimePicker(
                                 items = dateLabels,
                                 selectedIndex = dateIndex,
                                 onSelectedIndexChanged = { idx ->
-                                    val nextDate = dates.getOrNull(idx) ?: today
+                                    val nextDate = dates.getOrNull(idx) ?: return@WheelColumn
                                     if (nextDate != selectedDate) {
-                                        onDateTimeChanged(nextDate, selectedHour, selectedMinute)
+                                        onDateChanged(nextDate)
                                     }
                                 },
                                 modifier = Modifier.weight(1.9f),
@@ -218,7 +235,7 @@ fun WheelDateTimePicker(
                                 selectedIndex = selectedHour.coerceIn(0, 23),
                                 onSelectedIndexChanged = { h ->
                                     if (h != selectedHour) {
-                                        onDateTimeChanged(selectedDate, h, selectedMinute)
+                                        onHourChanged(h)
                                     }
                                 },
                                 modifier = Modifier.weight(0.85f),
@@ -236,7 +253,7 @@ fun WheelDateTimePicker(
                                 selectedIndex = selectedMinute.coerceIn(0, 59),
                                 onSelectedIndexChanged = { m ->
                                     if (m != selectedMinute) {
-                                        onDateTimeChanged(selectedDate, selectedHour, m)
+                                        onMinuteChanged(m)
                                     }
                                 },
                                 modifier = Modifier.weight(0.85f),
@@ -253,11 +270,11 @@ fun WheelDateTimePicker(
                                 items = yearLabels,
                                 selectedIndex = years.indexOf(selectedDate.year).coerceIn(0, years.lastIndex),
                                 onSelectedIndexChanged = { idx ->
-                                    val y = years.getOrNull(idx) ?: selectedDate.year
+                                    val y = years.getOrNull(idx) ?: return@WheelColumn
                                     val maxD = YearMonth.of(y, selectedDate.monthValue).lengthOfMonth()
                                     val next = LocalDate.of(y, selectedDate.monthValue, selectedDate.dayOfMonth.coerceAtMost(maxD))
                                     if (next != selectedDate) {
-                                        onDateTimeChanged(next, selectedHour, selectedMinute)
+                                        onDateChanged(next)
                                     }
                                 },
                                 modifier = Modifier.weight(1.25f),
@@ -271,7 +288,7 @@ fun WheelDateTimePicker(
                                     val maxD = YearMonth.of(selectedDate.year, m).lengthOfMonth()
                                     val next = LocalDate.of(selectedDate.year, m, selectedDate.dayOfMonth.coerceAtMost(maxD))
                                     if (next != selectedDate) {
-                                        onDateTimeChanged(next, selectedHour, selectedMinute)
+                                        onDateChanged(next)
                                     }
                                 },
                                 modifier = Modifier.weight(0.95f),
@@ -284,7 +301,7 @@ fun WheelDateTimePicker(
                                     val d = (idx + 1).coerceIn(1, daysInSelectedMonth)
                                     val next = LocalDate.of(selectedDate.year, selectedDate.monthValue, d)
                                     if (next != selectedDate) {
-                                        onDateTimeChanged(next, selectedHour, selectedMinute)
+                                        onDateChanged(next)
                                     }
                                 },
                                 modifier = Modifier.weight(0.95f),
@@ -307,41 +324,52 @@ private fun WheelColumn(
     val itemHeight = 40.dp
     val safeInitial = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeInitial)
-    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+    // SnapPosition.Start aligns the snapped item's top to offset == 0 (exact start of the center band after itemHeight top padding)
+    val flingBehavior = rememberSnapFlingBehavior(
+        lazyListState = listState,
+        snapPosition = SnapPosition.Start,
+    )
     val latestOnSelected by rememberUpdatedState(onSelectedIndexChanged)
+    val latestSelectedIndex by rememberUpdatedState(selectedIndex)
     val latestItemCount by rememberUpdatedState(items.size)
 
-    // Sync programmatic updates (e.g., quick preset chips, month length change, mode switch) smoothly
-    LaunchedEffect(selectedIndex, items.size) {
-        val target = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
-        if (!listState.isScrollInProgress && listState.firstVisibleItemIndex != target) {
-            listState.animateScrollToItem(target)
+    var isProgrammaticScroll by remember { mutableStateOf(false) }
+    var lastReportedFromScroll by remember { mutableIntStateOf(safeInitial) }
+
+    // Because vertical contentPadding == itemHeight and height == 3 * itemHeight,
+    // the item sitting in the center focus band ALWAYS has item.offset == 0.
+    val centeredIndex by remember {
+        derivedStateOf {
+            val visible = listState.layoutInfo.visibleItemsInfo
+            visible.minByOrNull { abs(it.offset) }?.index ?: listState.firstVisibleItemIndex
         }
     }
 
-    // Report settled snapped item without stale closure captures
+    // Live emission as the user drags or flings the wheel (never dropped, always accurate even on immediate Save tap)
     LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }
-            .filter { !it }
+        snapshotFlow { centeredIndex }
             .distinctUntilChanged()
-            .collect {
-                val layoutInfo = listState.layoutInfo
-                val centerY = layoutInfo.viewportStartOffset + (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset) / 2
-                val closest = layoutInfo.visibleItemsInfo.minByOrNull { item ->
-                    abs((item.offset + item.size / 2) - centerY)
-                }?.index
-                if (closest != null && closest in 0 until latestItemCount) {
-                    latestOnSelected(closest)
+            .collect { idx ->
+                if (!isProgrammaticScroll && idx in 0 until latestItemCount && idx != latestSelectedIndex) {
+                    lastReportedFromScroll = idx
+                    latestOnSelected(idx)
                 }
             }
     }
 
-    val centeredIndex by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val centerY = info.viewportStartOffset + (info.viewportEndOffset - info.viewportStartOffset) / 2
-            info.visibleItemsInfo.minByOrNull { abs((it.offset + it.size / 2) - centerY) }?.index
-                ?: listState.firstVisibleItemIndex
+    // Sync ONLY external programmatic updates (presets, tapping an adjacent row, or month length clamping),
+    // never fighting an active user drag/fling.
+    LaunchedEffect(selectedIndex, items.size) {
+        val target = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+        val isExternalUpdate = target != lastReportedFromScroll
+        if (isExternalUpdate && centeredIndex != target) {
+            isProgrammaticScroll = true
+            lastReportedFromScroll = target
+            try {
+                listState.animateScrollToItem(target)
+            } finally {
+                isProgrammaticScroll = false
+            }
         }
     }
 
@@ -353,12 +381,19 @@ private fun WheelColumn(
         modifier = modifier.height(itemHeight * 3),
     ) {
         items(items.size) { index ->
-            val distance = abs(index - centeredIndex)
-            val isSelected = distance == 0
+            val isSelected = index == centeredIndex
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(itemHeight),
+                    .height(itemHeight)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        if (index != latestSelectedIndex) {
+                            latestOnSelected(index)
+                        }
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -378,6 +413,15 @@ private fun WheelColumn(
                 )
             }
         }
+    }
+}
+
+private fun computeQuickWindowStart(selectedDate: LocalDate, today: LocalDate): LocalDate {
+    val diff = ChronoUnit.DAYS.between(today, selectedDate)
+    return when {
+        diff < 0 -> selectedDate
+        diff <= 89 -> today
+        else -> maxOf(today, selectedDate.minusDays(30))
     }
 }
 
