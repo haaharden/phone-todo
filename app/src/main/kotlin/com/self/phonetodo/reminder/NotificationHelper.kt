@@ -10,12 +10,14 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.self.phonetodo.MainActivity
 import com.self.phonetodo.R
 import com.self.phonetodo.data.UsageRepository
+import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 
 object NotificationHelper {
@@ -176,6 +178,9 @@ object NotificationHelper {
             else -> "待办提醒"
         }
 
+        val isRecurring = todo.reminder != null && todo.reminder.repeat.kind != RepeatKind.NONE
+        val doneActionLabel = if (isRecurring) "完成本次" else "标记完成"
+
         val builder = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_phonetodo)
             .setColor(BRAND_COLOR)
@@ -187,7 +192,7 @@ object NotificationHelper {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setContentIntent(openAppIntent)
-            .addAction(0, "标记完成", doneIntent)
+            .addAction(0, doneActionLabel, doneIntent)
             .addAction(0, "推迟 10 分钟", snoozeIntent)
 
         if (todo.strongAlert && !late) {
@@ -199,17 +204,20 @@ object NotificationHelper {
                     putExtra(ReminderReceiver.EXTRA_TODO_ID, todo.id)
                     putExtra(ReminderReceiver.EXTRA_TODO_TEXT, todo.text)
                     putExtra(ReminderReceiver.EXTRA_NOTIF_ID, notifId)
+                    putExtra(ReminderReceiver.EXTRA_IS_RECURRING, isRecurring)
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             builder.setFullScreenIntent(fullScreenIntent, true)
             builder.setOngoing(true)
 
-            // When locked or screen-off, Android launches StrongAlertActivity immediately;
-            // silence the notification channel audio so it never overlaps with StrongAlertActivity's looping alarm.
+            // Only silence the notification channel audio when Android is actually permitted to launch
+            // StrongAlertActivity full-screen on the lock screen (avoids silent alerts on Android 14+ without permission).
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            if (!pm.isInteractive || km.isKeyguardLocked) {
+            val canUseFullScreen = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                nm.canUseFullScreenIntent()
+            if (canUseFullScreen && (!pm.isInteractive || km.isKeyguardLocked)) {
                 builder.setSilent(true)
             }
         }

@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -24,15 +25,32 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Two-way private sync via a GitHub repository Contents API (`sync-data.json`).
- * Shares the exact v3 TodoData JSON + LWW/tombstone merge contract with Windows DeskTodo.
+ * - Strictly enforces that the target repository is private (`private == true`) before connecting or uploading.
+ * - Re-merges against the latest local state inside TodoRepository's lock after every upload and loops if
+ *   the user edited a todo while the HTTP request was in flight (zero lost updates).
+ * - Shares the exact v3 TodoData JSON + LWW/tombstone merge contract with Windows DeskTodo.
  */
 class GithubSyncManager(
     private val todoRepository: TodoRepository,
     private val settingsRepository: SettingsRepository,
 ) {
+    internal data class RemoteFile(
+        val sha: String,
+        val data: TodoData?,
+    )
+
+    internal class ShaConflictException(msg: String) : Exception(msg)
+
+    internal interface SyncTransport {
+        fun verifyPrivateRepo(repo: String, token: String)
+        fun fetchRemoteFile(repo: String, token: String): RemoteFile?
+        fun putRemoteFile(repo: String, token: String, content: String, sha: String?)
+    }
+
     companion object {
         const val SYNC_FILE_PATH = "sync-data.json"
         private val REPO_REGEX = Regex("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+        private val metaJson = Json { ignoreUnknownKeys = true }
 
         fun normalizeRepo(raw: String): String? {
             val cleaned = raw.trim()
@@ -50,14 +68,63 @@ class GithubSyncManager(
             val catsB = b.categories.map { it.copy(collapsed = false) }
             return catsA == catsB
         }
+
+        /** Parses GitHub `/repos/{owner}/{repo}` JSON body and returns whether `"private"` is true. */
+        fun parseRepoIsPrivate(responseBody: String): Boolean? = runCatching {
+            metaJson.parseToJsonElement(responseBody).jsonObject["private"]?.jsonPrimitive?.booleanOrNull
+        }.getOrNull()
+
+        /**
+         * Core conflict-safe sync loop (extracted for direct regression testing):
+         * 1. Fetch remote & merge against local snapshot.
+         * 2. Verify repository is still private before uploading; retry on SHA conflict.
+         * 3. Atomically re-merge with the LATEST local state inside TodoRepository's lock.
+         * 4. If new local edits arrived during the HTTP upload, perform another round so nothing is lost or stranded.
+         */
+        internal fun runSyncLoop(
+            repo: String,
+            token: String,
+            todoRepository: TodoRepository,
+            transport: SyncTransport,
+            maxRounds: Int = 3,
+        ): Boolean {
+            var uploadedAny = false
+            for (round in 0 until maxRounds) {
+                val remoteFile = transport.fetchRemoteFile(repo, token)
+                val localSnapshot = todoRepository.data.value
+                val remoteData = remoteFile?.data
+
+                val merged = if (remoteData != null) {
+                    SyncMerger.merge(localSnapshot, remoteData)
+                } else {
+                    localSnapshot
+                }
+
+                val remoteUnchanged = remoteData != null && isSemanticallyEqual(merged, remoteData)
+                if (!remoteUnchanged) {
+                    // Always verify privacy right before uploading personal todo contents
+                    transport.verifyPrivateRepo(repo, token)
+                    val serialized = todoRepository.json.encodeToString(TodoData.serializer(), merged)
+                    try {
+                        transport.putRemoteFile(repo, token, serialized, remoteFile?.sha)
+                        uploadedAny = true
+                    } catch (e: ShaConflictException) {
+                        if (round == maxRounds - 1) throw e
+                        continue
+                    }
+                }
+
+                // Atomically merge against whatever local state exists RIGHT NOW (never clobber concurrent edits!)
+                val postLocal = todoRepository.mergeFromSync(merged)
+
+                // If user mutated a todo while the HTTP request was in flight, run one more round to push it too
+                if (isSemanticallyEqual(postLocal, merged)) {
+                    return uploadedAny
+                }
+            }
+            return uploadedAny
+        }
     }
-
-    private data class RemoteFile(
-        val sha: String,
-        val data: TodoData?,
-    )
-
-    private class ShaConflictException(msg: String) : Exception(msg)
 
     private val syncMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -66,6 +133,13 @@ class GithubSyncManager(
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(20, TimeUnit.SECONDS)
         .build()
+
+    private val httpTransport = object : SyncTransport {
+        override fun verifyPrivateRepo(repo: String, token: String) = verifyRepoAccess(repo, token)
+        override fun fetchRemoteFile(repo: String, token: String): RemoteFile? = this@GithubSyncManager.fetchRemoteFile(repo, token)
+        override fun putRemoteFile(repo: String, token: String, content: String, sha: String?) =
+            this@GithubSyncManager.putRemoteFile(repo, token, content, sha)
+    }
 
     suspend fun connectAndSync(rawRepo: String, rawToken: String): Result<String> {
         val repo = normalizeRepo(rawRepo)
@@ -79,7 +153,11 @@ class GithubSyncManager(
             runCatching { verifyRepoAccess(repo, token) }
         }
         if (verifyResult.isFailure) {
-            return Result.failure(verifyResult.exceptionOrNull()!!)
+            val err = verifyResult.exceptionOrNull()!!
+            settingsRepository.update {
+                it.copy(lastSyncStatus = "连接被拒绝：${err.message?.take(80) ?: "校验失败"}")
+            }
+            return Result.failure(err)
         }
 
         settingsRepository.saveGithubToken(token)
@@ -87,7 +165,7 @@ class GithubSyncManager(
             it.copy(
                 githubSyncRepo = repo,
                 githubSyncEnabled = true,
-                lastSyncStatus = "仓库已连接，正在首次同步…",
+                lastSyncStatus = "私有仓库已验证，正在首次同步…",
             )
         }
         return syncNow()
@@ -113,13 +191,15 @@ class GithubSyncManager(
                     return@runCatching "未启用 GitHub 同步"
                 }
 
-                val statusMsg = try {
-                    syncOnce(repo, token)
-                } catch (_: ShaConflictException) {
-                    // Concurrent push from DeskTodo — retry once with the fresh remote sha
-                    syncOnce(repo, token)
-                }
+                val uploaded = runSyncLoop(
+                    repo = repo,
+                    token = token,
+                    todoRepository = todoRepository,
+                    transport = httpTransport,
+                )
 
+                val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                val statusMsg = if (uploaded) "同步成功 ($timeStr)" else "已是最新 ($timeStr)"
                 val now = System.currentTimeMillis()
                 settingsRepository.update {
                     it.copy(
@@ -130,35 +210,10 @@ class GithubSyncManager(
                 statusMsg
             }.onFailure { err ->
                 settingsRepository.update {
-                    it.copy(lastSyncStatus = "同步暂停：${err.message?.take(60) ?: "网络不可达"}")
+                    it.copy(lastSyncStatus = "同步暂停：${err.message?.take(80) ?: "网络不可达"}")
                 }
             }
         }
-    }
-
-    private fun syncOnce(repo: String, token: String): String {
-        val remoteFile = fetchRemoteFile(repo, token)
-        val local = todoRepository.data.value
-        val remoteData = remoteFile?.data
-
-        val merged = if (remoteData != null) {
-            SyncMerger.merge(local, remoteData)
-        } else {
-            local
-        }
-
-        val remoteUnchanged = remoteData != null && isSemanticallyEqual(merged, remoteData)
-        if (!remoteUnchanged) {
-            val serialized = todoRepository.json.encodeToString(TodoData.serializer(), merged)
-            putRemoteFile(repo, token, serialized, remoteFile?.sha)
-        }
-
-        if (!isSemanticallyEqual(local, merged)) {
-            todoRepository.replaceFromSync(merged)
-        }
-
-        val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        return if (remoteUnchanged) "已是最新 ($timeStr)" else "同步成功 ($timeStr)"
     }
 
     private fun baseRequest(url: String, token: String): Request.Builder =
@@ -173,7 +228,13 @@ class GithubSyncManager(
         val req = baseRequest("https://api.github.com/repos/$repo", token).get().build()
         http.newCall(req).execute().use { resp ->
             when (resp.code) {
-                in 200..299 -> Unit
+                in 200..299 -> {
+                    val body = resp.body?.string().orEmpty()
+                    val isPrivate = parseRepoIsPrivate(body)
+                    if (isPrivate != true) {
+                        error("安全拦截：仓库 $repo 不是私有仓库，已禁止上传待办数据。请在 GitHub 将其改为 Private 后重试")
+                    }
+                }
                 401 -> error("Token 无效或已过期")
                 403 -> error("Token 权限不足，请勾选该仓库 Contents 读写权限")
                 404 -> error("找不到仓库 $repo，请先在 GitHub 创建该私有仓库并授权 Token")
@@ -189,7 +250,7 @@ class GithubSyncManager(
         http.newCall(req).execute().use { resp ->
             when (resp.code) {
                 404 -> {
-                    // Distinguish between missing file (brand new sync) and missing/unauthorized repo
+                    // Distinguish between missing file (brand new sync) and missing/unauthorized/public repo
                     verifyRepoAccess(repo, token)
                     return null
                 }

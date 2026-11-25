@@ -10,6 +10,13 @@ class ReminderReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as? PhoneTodoApp ?: return
+        when (intent.action) {
+            ACTION_TEST_STRONG_ALERT -> {
+                NotificationHelper.sendTestNotification(context, strong = true)
+                return
+            }
+        }
+
         val todoId = intent.getStringExtra(EXTRA_TODO_ID) ?: return
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, NotificationHelper.notificationIdFor(todoId))
 
@@ -44,10 +51,12 @@ class ReminderReceiver : BroadcastReceiver() {
         const val ACTION_FIRE_REMINDER = "com.self.phonetodo.ACTION_FIRE_REMINDER"
         const val ACTION_MARK_DONE = "com.self.phonetodo.ACTION_MARK_DONE"
         const val ACTION_SNOOZE_10M = "com.self.phonetodo.ACTION_SNOOZE_10M"
+        const val ACTION_TEST_STRONG_ALERT = "com.self.phonetodo.ACTION_TEST_STRONG_ALERT"
 
         const val EXTRA_TODO_ID = "extra_todo_id"
         const val EXTRA_TODO_TEXT = "extra_todo_text"
         const val EXTRA_FIRED_AT = "extra_fired_at"
         const val EXTRA_NOTIF_ID = "extra_notif_id"
+        const val EXTRA_IS_RECURRING = "extra_is_recurring"
     }
 }

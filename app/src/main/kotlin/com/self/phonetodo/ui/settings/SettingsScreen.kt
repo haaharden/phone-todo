@@ -100,6 +100,7 @@ fun SettingsScreen(
     onGithubConnectAndSync: suspend (repo: String, token: String) -> Result<String>,
     onGithubSyncNow: suspend () -> Result<String>,
     onGithubDisconnect: () -> Unit,
+    onScheduleDelayedStrongTest: () -> Unit,
     onOpenImport: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -298,8 +299,16 @@ fun SettingsScreen(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
                     ) {
-                        Text("测试强提醒")
+                        Text("立即强提醒")
                     }
+                }
+
+                OutlinedButton(
+                    onClick = onScheduleDelayedStrongTest,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text("15 秒后触发锁屏强提醒（点完锁屏实测）")
                 }
             }
 

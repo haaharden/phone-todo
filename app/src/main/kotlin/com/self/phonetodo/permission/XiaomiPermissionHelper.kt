@@ -82,9 +82,9 @@ object XiaomiPermissionHelper {
             PermissionCheckItem(
                 id = "notification",
                 title = "通知权限",
-                subtitle = "显示待办提醒与常驻状态栏",
+                subtitle = "显示待办准点提醒与强提醒通知",
                 granted = hasNotificationPermission(context),
-                requiredFor = "核心提醒与保活",
+                requiredFor = "核心提醒",
             ),
             PermissionCheckItem(
                 id = "exact_alarm",
@@ -96,9 +96,9 @@ object XiaomiPermissionHelper {
             PermissionCheckItem(
                 id = "overlay",
                 title = "显示悬浮窗",
-                subtitle = "每次解锁手机时在顶部弹出待办与解锁次数横幅",
+                subtitle = "每次解锁手机时在顶部弹出极简用机统计胶囊",
                 granted = hasOverlayPermission(context),
-                requiredFor = "解锁顶部横幅",
+                requiredFor = "解锁顶部胶囊",
             ),
             PermissionCheckItem(
                 id = "usage_stats",

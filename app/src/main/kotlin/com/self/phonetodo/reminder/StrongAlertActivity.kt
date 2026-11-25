@@ -69,6 +69,7 @@ class StrongAlertActivity : ComponentActivity() {
         val todoId = intent.getStringExtra(ReminderReceiver.EXTRA_TODO_ID).orEmpty()
         val todoText = intent.getStringExtra(ReminderReceiver.EXTRA_TODO_TEXT).orEmpty()
         val notifId = intent.getIntExtra(ReminderReceiver.EXTRA_NOTIF_ID, -1)
+        val isRecurring = intent.getBooleanExtra(ReminderReceiver.EXTRA_IS_RECURRING, false)
 
         startAlarmFeedback()
 
@@ -169,7 +170,7 @@ class StrongAlertActivity : ComponentActivity() {
                                     ),
                                 ) {
                                     Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Text(" 已完成", fontWeight = FontWeight.SemiBold)
+                                    Text(if (isRecurring) " 完成本次" else " 已完成", fontWeight = FontWeight.SemiBold)
                                 }
                             }
 
@@ -222,12 +223,12 @@ class StrongAlertActivity : ComponentActivity() {
         runCatching { vibrator?.cancel() }
     }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
             stopAlarmFeedback()
             return true
         }
-        return super.dispatchKeyEvent(event)
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onStop() {

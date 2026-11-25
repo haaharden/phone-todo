@@ -37,6 +37,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -76,6 +77,7 @@ import com.self.phonetodo.model.Todo
 import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.ui.components.WheelDateTimePicker
 import kotlinx.coroutines.launch
+import java.time.Instant
 
 /**
  * Single-screen in-window overlay bottom sheet for creating/editing a todo.
@@ -106,6 +108,7 @@ fun TodoEditorSheet(
         autoSaved: Boolean,
     ) -> Unit,
     onDelete: (() -> Unit)? = null,
+    onFinishPermanently: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -128,10 +131,18 @@ fun TodoEditorSheet(
     val initialCatId = remember(editingTodo, defaultCategoryId) { editingTodo?.categoryId ?: defaultCategoryId }
     val initialReminderEnabled = remember(editingTodo) { editingTodo == null || editingTodo.reminder != null }
     val initialDate = remember(editingTodo) {
-        editingTodo?.reminder?.let { ReminderCalculator.parseDate(it.date) } ?: defaultZdt.toLocalDate()
+        editingTodo?.reminder?.let { rem ->
+            Instant.ofEpochMilli(ReminderCalculator.displayEpochMs(rem))
+                .atZone(ReminderCalculator.safeZone(rem.timeZone))
+                .toLocalDate()
+        } ?: defaultZdt.toLocalDate()
     }
     val initialTime = remember(editingTodo) {
-        editingTodo?.reminder?.let { ReminderCalculator.parseTime(it.time) } ?: defaultZdt.toLocalTime()
+        editingTodo?.reminder?.let { rem ->
+            Instant.ofEpochMilli(ReminderCalculator.displayEpochMs(rem))
+                .atZone(ReminderCalculator.safeZone(rem.timeZone))
+                .toLocalTime()
+        } ?: defaultZdt.toLocalTime()
     }
     val initialRepeat = remember(editingTodo) { editingTodo?.reminder?.repeat ?: Repeat() }
     val initialStrongAlert = remember(editingTodo) { editingTodo?.strongAlert ?: false }
@@ -590,21 +601,42 @@ fun TodoEditorSheet(
 
                     Spacer(Modifier.height(2.dp))
 
-                    Button(
-                        onClick = {
-                            val trimmed = text.trim()
-                            val finalRem = buildFinalReminder()
-                            closeWithAnimation {
-                                onSave(trimmed, categoryId, finalRem, strongAlert, pinned, false)
-                            }
-                        },
-                        enabled = text.isNotBlank() && !isClosing,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                        shape = RoundedCornerShape(14.dp),
+                    val showEndRepeat = onFinishPermanently != null &&
+                        editingTodo != null &&
+                        !editingTodo.done &&
+                        editingTodo.reminder?.repeat?.kind != null &&
+                        editingTodo.reminder.repeat.kind != RepeatKind.NONE
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Text(if (editingTodo == null) "添加待办" else "保存", fontWeight = FontWeight.SemiBold)
+                        if (showEndRepeat) {
+                            OutlinedButton(
+                                onClick = { closeWithAnimation { onFinishPermanently?.invoke() } },
+                                enabled = !isClosing,
+                                modifier = Modifier.height(50.dp),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Text("结束重复")
+                            }
+                        }
+                        Button(
+                            onClick = {
+                                val trimmed = text.trim()
+                                val finalRem = buildFinalReminder()
+                                closeWithAnimation {
+                                    onSave(trimmed, categoryId, finalRem, strongAlert, pinned, false)
+                                }
+                            },
+                            enabled = text.isNotBlank() && !isClosing,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Text(if (editingTodo == null) "添加待办" else "保存", fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }

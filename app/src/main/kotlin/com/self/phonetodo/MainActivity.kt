@@ -63,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.permission.XiaomiPermissionHelper
+import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.service.PhoneTodoForegroundService
 import com.self.phonetodo.ui.importer.ImportScreen
 import com.self.phonetodo.ui.settings.SettingsScreen
@@ -91,6 +92,7 @@ class MainActivity : ComponentActivity() {
 
     private var hasOverlayPermState by mutableStateOf(false)
     private var requestedTabState by mutableStateOf<MainTab?>(null)
+    private var requestedTodoIdState by mutableStateOf<String?>(null)
     private var resumeTickState by mutableIntStateOf(0)
 
     private val notifPermLauncher = registerForActivityResult(
@@ -124,6 +126,8 @@ class MainActivity : ComponentActivity() {
                     resumeTick = resumeTickState,
                     requestedTab = requestedTabState,
                     onRequestedTabConsumed = { requestedTabState = null },
+                    requestedTodoId = requestedTodoIdState,
+                    onRequestedTodoIdConsumed = { requestedTodoIdState = null },
                 )
             }
         }
@@ -156,10 +160,14 @@ class MainActivity : ComponentActivity() {
         if (intent?.getStringExtra(EXTRA_OPEN_TAB) == "stats") {
             requestedTabState = MainTab.STATS
         }
+        intent?.getStringExtra(EXTRA_TODO_ID)?.takeIf { it.isNotBlank() }?.let { todoId ->
+            requestedTodoIdState = todoId
+        }
     }
 
     companion object {
         const val EXTRA_OPEN_TAB = "extra_open_tab"
+        const val EXTRA_TODO_ID = "todoId"
     }
 }
 
@@ -171,8 +179,11 @@ private fun PhoneTodoRoot(
     resumeTick: Int,
     requestedTab: MainTab?,
     onRequestedTabConsumed: () -> Unit,
+    requestedTodoId: String?,
+    onRequestedTodoIdConsumed: () -> Unit,
 ) {
     val todoData by app.todoRepository.data.collectAsState()
+    val recoveryNotice by app.todoRepository.recoveryNotice.collectAsState()
     val usageOverview by app.usageRepository.overview.collectAsState()
     val settings by app.settingsRepository.settings.collectAsState()
     val isMonitorRunning by PhoneTodoForegroundService.isRunning.collectAsState()
@@ -212,6 +223,29 @@ private fun PhoneTodoRoot(
             currentTab = requestedTab
             overlayPage = OverlayPage.NONE
             onRequestedTabConsumed()
+        }
+    }
+
+    // Deep-link from reminder notification directly into the matching todo editor
+    LaunchedEffect(requestedTodoId, todoData) {
+        if (requestedTodoId != null) {
+            val target = todoData.activeTodos().firstOrNull { it.id == requestedTodoId }
+            currentTab = MainTab.TODOS
+            overlayPage = OverlayPage.NONE
+            if (target != null) {
+                editingTodo = target
+                showEditorSheet = true
+            }
+            onRequestedTodoIdConsumed()
+        }
+    }
+
+    // Surface backup recovery notice immediately if data.json was auto-recovered on startup
+    LaunchedEffect(recoveryNotice) {
+        val msg = recoveryNotice
+        if (!msg.isNullOrBlank()) {
+            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+            app.todoRepository.consumeRecoveryNotice()
         }
     }
 
@@ -335,14 +369,25 @@ private fun PhoneTodoRoot(
                         selectedCategoryFilter = selectedCategoryFilter,
                         onSelectCategoryFilter = { selectedCategoryFilter = it },
                         onToggleTodo = { id ->
-                            val prev = app.todoRepository.toggleTodoDone(id)
-                            if (prev != null && !prev.done) {
-                                val label = prev.text.take(14) + if (prev.text.length > 14) "…" else ""
-                                undoBanner = UndoBannerState(
-                                    id = System.nanoTime(),
-                                    message = "已完成「$label」",
-                                    onUndo = { app.todoRepository.restoreTodo(prev) },
-                                )
+                            val res = app.todoRepository.toggleTodoDone(id)
+                            if (res != null) {
+                                val prev = res.previous
+                                if (res.advancedNextAt != null) {
+                                    val tz = prev.reminder?.timeZone ?: settings.defaultTimeZone
+                                    val nextLabel = ReminderCalculator.formatIn(res.advancedNextAt, tz)
+                                    undoBanner = UndoBannerState(
+                                        id = System.nanoTime(),
+                                        message = "已完成本次 · 下次 $nextLabel",
+                                        onUndo = { app.todoRepository.restoreTodo(prev) },
+                                    )
+                                } else if (!prev.done) {
+                                    val label = prev.text.take(14) + if (prev.text.length > 14) "…" else ""
+                                    undoBanner = UndoBannerState(
+                                        id = System.nanoTime(),
+                                        message = "已完成「$label」",
+                                        onUndo = { app.todoRepository.restoreTodo(prev) },
+                                    )
+                                }
                             }
                         },
                         onEditTodo = {
@@ -533,6 +578,10 @@ private fun PhoneTodoRoot(
                         },
                         onGithubSyncNow = { app.githubSyncManager.syncNow() },
                         onGithubDisconnect = { app.githubSyncManager.disconnect() },
+                        onScheduleDelayedStrongTest = {
+                            app.reminderScheduler.scheduleDelayedTestStrongAlert(15L)
+                            Toast.makeText(activity, "已安排 15 秒后强提醒，请立即锁屏测试", Toast.LENGTH_LONG).show()
+                        },
                         onOpenImport = { overlayPage = OverlayPage.IMPORT },
                         onBack = { overlayPage = OverlayPage.NONE },
                     )
@@ -589,6 +638,20 @@ private fun PhoneTodoRoot(
                                 id = System.nanoTime(),
                                 message = "已删除「$label」",
                                 onUndo = { app.todoRepository.restoreTodo(deleted) },
+                            )
+                        }
+                    }
+                },
+                onFinishPermanently = editingTodo?.let { target ->
+                    {
+                        val finished = app.todoRepository.finishTodoPermanently(target.id)
+                        showEditorSheet = false
+                        if (finished != null) {
+                            val label = finished.text.take(14) + if (finished.text.length > 14) "…" else ""
+                            undoBanner = UndoBannerState(
+                                id = System.nanoTime(),
+                                message = "已结束重复「$label」",
+                                onUndo = { app.todoRepository.restoreTodo(finished) },
                             )
                         }
                     }

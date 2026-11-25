@@ -13,44 +13,72 @@ import com.self.phonetodo.model.TodoData
 /**
  * Uses AlarmManager.setAlarmClock() so Android Doze and Xiaomi HyperOS
  * wake the device reliably at the exact reminder timestamp.
+ *
+ * Lock discipline: [scheduleLock] only guards AlarmManager updates and NEVER wraps
+ * callbacks into [TodoRepository], eliminating AB-BA deadlock risk.
  */
 class ReminderScheduler(
     private val context: Context,
     private val todoRepository: TodoRepository,
 ) {
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    private val scheduleLock = Any()
 
-    @Synchronized
     fun syncAll(data: TodoData = todoRepository.data.value, fireMissed: Boolean = false) {
         val now = System.currentTimeMillis()
-        val activePending = data.activeTodos().filter { !it.done && it.reminder?.nextAt != null }
-        val activeIdSet = activePending.map { it.id }.toSet()
+        val missed = synchronized(scheduleLock) {
+            val activePending = data.activeTodos().filter { !it.done && it.reminder?.nextAt != null }
+            val activeIdSet = activePending.map { it.id }.toSet()
 
-        // Cancel alarms for ALL inactive/completed/deleted/reminder-cleared todos (survives process restarts!)
-        for (todo in data.todos) {
-            if (todo.id !in activeIdSet) {
-                cancelAlarm(todo.id)
-            }
-        }
-
-        val missed = mutableListOf<Pair<Todo, Long>>()
-        for (todo in activePending) {
-            val nextAt = todo.reminder?.nextAt ?: continue
-            if (nextAt <= now) {
-                cancelAlarm(todo.id)
-                if (fireMissed) {
-                    missed += todo to nextAt
+            // Cancel alarms for ALL inactive/completed/deleted/reminder-cleared todos (survives process restarts!)
+            for (todo in data.todos) {
+                if (todo.id !in activeIdSet) {
+                    cancelAlarm(todo.id)
                 }
-                continue
             }
-            scheduleExactAlarm(todo.id, nextAt)
+
+            val collected = mutableListOf<Pair<Todo, Long>>()
+            for (todo in activePending) {
+                val nextAt = todo.reminder?.nextAt ?: continue
+                if (nextAt <= now) {
+                    cancelAlarm(todo.id)
+                    if (fireMissed) {
+                        collected += todo to nextAt
+                    }
+                    continue
+                }
+                scheduleExactAlarm(todo.id, nextAt)
+            }
+            collected
         }
 
-        // Fire missed reminders cleanly after updating scheduled alarms
+        // Fire missed reminders and write back strictly OUTSIDE scheduleLock
         for ((todo, nextAt) in missed) {
             NotificationHelper.showTodoReminder(context, todo, late = (now - nextAt) > 90_000L)
             todoRepository.advanceReminderAfterFired(todo.id, nextAt)
         }
+    }
+
+    /** Schedules a real AlarmManager wake-up in [delaySeconds] so the user can lock the screen and test HyperOS delivery. */
+    fun scheduleDelayedTestStrongAlert(delaySeconds: Long = 15L) {
+        val triggerAtMs = System.currentTimeMillis() + delaySeconds.coerceAtLeast(3L) * 1_000L
+        val fireIntent = PendingIntent.getBroadcast(
+            context,
+            TEST_STRONG_ALERT_REQ_CODE,
+            Intent(context, ReminderReceiver::class.java).apply {
+                action = ReminderReceiver.ACTION_TEST_STRONG_ALERT
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val showIntent = PendingIntent.getActivity(
+            context,
+            TEST_STRONG_ALERT_REQ_CODE + 1,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        scheduleTrigger(triggerAtMs, showIntent, fireIntent)
     }
 
     private fun scheduleExactAlarm(todoId: String, triggerAtMs: Long) {
@@ -70,10 +98,15 @@ class ReminderScheduler(
             requestCodeFor(todoId) + 1,
             Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(MainActivity.EXTRA_TODO_ID, todoId)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        scheduleTrigger(triggerAtMs, showIntent, fireIntent)
+    }
+
+    private fun scheduleTrigger(triggerAtMs: Long, showIntent: PendingIntent, fireIntent: PendingIntent) {
         val canExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             alarmManager.canScheduleExactAlarms()
         } else {
@@ -109,4 +142,8 @@ class ReminderScheduler(
     }
 
     private fun requestCodeFor(todoId: String): Int = (todoId.hashCode() and 0x0FFFFFFF) + 10_000
+
+    companion object {
+        private const val TEST_STRONG_ALERT_REQ_CODE = 9_991
+    }
 }

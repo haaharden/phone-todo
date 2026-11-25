@@ -204,6 +204,22 @@ object ReminderCalculator {
         }
     }
 
+    /**
+     * Computes the next reminder timestamp when the user completes the CURRENT occurrence of a recurring todo:
+     * - If the current occurrence already fired (lastFiredAt != null), advances past max(now, lastFiredAt).
+     * - If checked off early before nextAt (lastFiredAt == null), advances past max(now, nextAt) so today's
+     *   occurrence is actually completed and moves cleanly to the following cycle.
+     */
+    fun nextOccurrenceAfterComplete(rem: Reminder, nowMs: Long = System.currentTimeMillis()): Long? {
+        if (rem.repeat.kind == RepeatKind.NONE) return null
+        val pivot = if (rem.lastFiredAt != null) {
+            maxOf(nowMs, rem.lastFiredAt)
+        } else {
+            maxOf(nowMs, rem.nextAt ?: 0L)
+        }
+        return nextOccurrence(rem, pivot)
+    }
+
     fun formatIn(utcMs: Long, tz: String): String {
         val zone = safeZone(tz)
         val zdt = Instant.ofEpochMilli(utcMs).atZone(zone)

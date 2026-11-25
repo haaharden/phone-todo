@@ -5,6 +5,7 @@ import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.PowerManager
 import android.os.Process
 import com.self.phonetodo.model.AppUsageItem
@@ -273,15 +274,14 @@ class UsageRepository(private val context: Context) {
             .take(15)
             .map { (pkg, ms) ->
                 val label = runCatching {
-                    val info = pm.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0))
-                    pm.getApplicationLabel(info).toString()
-                }.getOrElse {
-                    runCatching {
+                    val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        pm.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0))
+                    } else {
                         @Suppress("DEPRECATION")
-                        val info = pm.getApplicationInfo(pkg, 0)
-                        pm.getApplicationLabel(info).toString()
-                    }.getOrElse { pkg.substringAfterLast('.') }
-                }
+                        pm.getApplicationInfo(pkg, 0)
+                    }
+                    pm.getApplicationLabel(info).toString()
+                }.getOrElse { pkg.substringAfterLast('.') }
                 AppUsageItem(
                     packageName = pkg,
                     appName = label,

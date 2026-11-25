@@ -1,5 +1,6 @@
 package com.self.phonetodo
 
+import com.self.phonetodo.data.TodoRepository
 import com.self.phonetodo.importer.TodoDataPort
 import com.self.phonetodo.model.Category
 import com.self.phonetodo.model.Reminder
@@ -16,7 +17,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 import java.time.ZonedDateTime
 
 class PhoneTodoUnitTests {
@@ -247,5 +251,174 @@ class PhoneTodoUnitTests {
         val formatted = ReminderCalculator.formatIn(futureYearMs, "Asia/Shanghai")
         assertTrue("Expected year prefix in '$formatted'", formatted.startsWith("2030/6/15 "))
         assertTrue(formatted.endsWith("09:30"))
+    }
+
+    @Test
+    fun githubSync_preservesConcurrentLocalEditDuringUpload() {
+        val tempDir = Files.createTempDirectory("phonetodo_sync_race").toFile()
+        try {
+            val todoRepo = TodoRepository(tempDir)
+            todoRepo.addTodo("已有待办")
+            val remoteInitial = TodoData(
+                version = 3,
+                todos = listOf(Todo("remote_1", "桌面新建", createdAt = 100L, updatedAt = 200L)),
+            )
+
+            var remoteState: TodoData? = remoteInitial
+            var remoteSha = "sha_1"
+            var putCalls = 0
+            var injectedDuringUpload = false
+
+            val transport = object : GithubSyncManager.SyncTransport {
+                override fun verifyPrivateRepo(repo: String, token: String) = Unit
+
+                override fun fetchRemoteFile(repo: String, token: String): GithubSyncManager.RemoteFile {
+                    return GithubSyncManager.RemoteFile(sha = remoteSha, data = remoteState)
+                }
+
+                override fun putRemoteFile(repo: String, token: String, content: String, sha: String?) {
+                    putCalls++
+                    if (!injectedDuringUpload) {
+                        injectedDuringUpload = true
+                        // Simulate user creating a brand-new todo while the HTTP upload is in flight!
+                        todoRepo.addTodo("上传期间新增的待办")
+                    }
+                    remoteState = todoRepo.json.decodeFromString(TodoData.serializer(), content)
+                    remoteSha = "sha_${putCalls + 1}"
+                }
+            }
+
+            val uploaded = GithubSyncManager.runSyncLoop(
+                repo = "haaharden/todo-sync",
+                token = "tok",
+                todoRepository = todoRepo,
+                transport = transport,
+            )
+
+            assertTrue(uploaded)
+            assertEquals(2, putCalls)
+            val localTexts = todoRepo.data.value.activeTodos().map { it.text }.toSet()
+            val remoteTexts = remoteState!!.activeTodos().map { it.text }.toSet()
+            assertTrue("Local must keep concurrent edit", "上传期间新增的待办" in localTexts)
+            assertTrue("Local must receive remote todo", "桌面新建" in localTexts)
+            assertTrue("Remote must also receive concurrent edit on follow-up pass", "上传期间新增的待办" in remoteTexts)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun githubSync_rejectsPublicRepositoryBeforeUpload() {
+        assertEquals(true, GithubSyncManager.parseRepoIsPrivate("""{"id":1,"private":true}"""))
+        assertEquals(false, GithubSyncManager.parseRepoIsPrivate("""{"id":1,"private":false}"""))
+        assertNull(GithubSyncManager.parseRepoIsPrivate("""{"id":1}"""))
+
+        val tempDir = Files.createTempDirectory("phonetodo_public_guard").toFile()
+        try {
+            val repo = TodoRepository(tempDir)
+            repo.addTodo("私密待办")
+            var putAttempted = false
+
+            val transport = object : GithubSyncManager.SyncTransport {
+                override fun verifyPrivateRepo(repo: String, token: String) {
+                    error("安全拦截：仓库不是私有仓库")
+                }
+
+                override fun fetchRemoteFile(repo: String, token: String): GithubSyncManager.RemoteFile? = null
+
+                override fun putRemoteFile(repo: String, token: String, content: String, sha: String?) {
+                    putAttempted = true
+                }
+            }
+
+            try {
+                GithubSyncManager.runSyncLoop("haaharden/public-repo", "tok", repo, transport)
+                fail("Expected public repo upload to be rejected")
+            } catch (e: IllegalStateException) {
+                assertTrue(e.message.orEmpty().contains("私有仓库"))
+            }
+            assertFalse("Must never call putRemoteFile when repo is not private", putAttempted)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun todoRepository_recoversFromCorruptedPrimaryUsingLatestBackup() {
+        val tempDir = Files.createTempDirectory("phonetodo_corrupt_recover").toFile()
+        try {
+            val repo1 = TodoRepository(tempDir)
+            repo1.addTodo("重要待办不可丢")
+
+            // Write a valid backup explicitly and corrupt primary data.json
+            val backupDir = File(tempDir, "backups").apply { mkdirs() }
+            val primary = File(tempDir, "data.json")
+            primary.copyTo(File(backupDir, "data_20261125_130000.json"), overwrite = true)
+            primary.writeText("{ truncated corrupted json", Charsets.UTF_8)
+
+            val repo2 = TodoRepository(tempDir)
+            val restoredTexts = repo2.data.value.activeTodos().map { it.text }
+            assertEquals(listOf("重要待办不可丢"), restoredTexts)
+            assertNotNull(repo2.recoveryNotice.value)
+            assertTrue(repo2.recoveryNotice.value!!.contains("已自动从备份"))
+            val corruptPreserved = tempDir.listFiles()?.any { it.name.startsWith("data.json.corrupt_") } == true
+            assertTrue("Corrupted original file must be preserved", corruptPreserved)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun todoRepository_recurringCompleteOnceAdvancesAndFinishPermanentlyEnds() {
+        val tempDir = Files.createTempDirectory("phonetodo_recurring").toFile()
+        try {
+            val repo = TodoRepository(tempDir)
+            val today9am = ZonedDateTime.parse("2026-11-25T09:00:00+08:00").toInstant().toEpochMilli()
+            val tomorrow9am = ZonedDateTime.parse("2026-11-26T09:00:00+08:00").toInstant().toEpochMilli()
+            val dayAfter9am = ZonedDateTime.parse("2026-11-27T09:00:00+08:00").toInstant().toEpochMilli()
+            val earlyNow = ZonedDateTime.parse("2026-11-25T08:30:00+08:00").toInstant().toEpochMilli()
+
+            val created = repo.addTodo(
+                text = "每天吃药",
+                reminder = Reminder(
+                    date = "2026-11-25",
+                    time = "09:00",
+                    timeZone = "Asia/Shanghai",
+                    repeat = Repeat(RepeatKind.DAILY, interval = 1),
+                    nextAt = today9am,
+                    lastFiredAt = null,
+                ),
+            )!!
+
+            // 1. Complete early before 09:00 -> advances cleanly to tomorrow 09:00 and stays active
+            val resEarly = repo.toggleTodoDone(created.id, now = earlyNow)!!
+            assertEquals(tomorrow9am, resEarly.advancedNextAt)
+            val afterEarly = repo.data.value.activeTodos().first { it.id == created.id }
+            assertFalse(afterEarly.done)
+            assertEquals(tomorrow9am, afterEarly.reminder?.nextAt)
+            assertNull(afterEarly.reminder?.lastFiredAt)
+
+            // 2. Undo restores exact previous state
+            repo.restoreTodo(resEarly.previous)
+            val afterUndo = repo.data.value.activeTodos().first { it.id == created.id }
+            assertEquals(today9am, afterUndo.reminder?.nextAt)
+
+            // 3. Simulate fired reminder at tomorrow 09:00, then check off at 09:15 -> advances to dayAfter 09:00
+            repo.advanceReminderAfterFired(created.id, tomorrow9am)
+            val afterFired = repo.data.value.activeTodos().first { it.id == created.id }
+            assertEquals(tomorrow9am, afterFired.reminder?.lastFiredAt)
+            val resAfterFire = repo.toggleTodoDone(
+                created.id,
+                now = ZonedDateTime.parse("2026-11-26T09:15:00+08:00").toInstant().toEpochMilli(),
+            )!!
+            assertEquals(dayAfter9am, resAfterFire.advancedNextAt)
+            assertNull(repo.data.value.activeTodos().first { it.id == created.id }.reminder?.lastFiredAt)
+
+            // 4. Finish permanently marks done = true
+            repo.finishTodoPermanently(created.id)
+            assertTrue(repo.data.value.activeTodos().first { it.id == created.id }.done)
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 }
