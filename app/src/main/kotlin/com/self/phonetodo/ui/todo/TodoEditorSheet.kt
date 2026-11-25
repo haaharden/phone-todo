@@ -1,21 +1,35 @@
 package com.self.phonetodo.ui.todo
 
+import android.content.Context
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -27,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,13 +49,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.model.Category
@@ -76,25 +96,8 @@ fun TodoEditorSheet(
     onDelete: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    fun hideKeyboard() {
-        focusManager.clearFocus(force = true)
-        keyboardController?.hide()
-    }
-
-    val scrollHideKeyboard = remember {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.UserInput && available.y != 0f) {
-                    focusManager.clearFocus(force = true)
-                    keyboardController?.hide()
-                }
-                return Offset.Zero
-            }
-        }
-    }
+    // Populated inside ModalBottomSheet content so focus/keyboard calls target the Dialog's own window & FocusOwner.
+    val dismissKeyboardRef = remember { mutableStateOf<() -> Unit>({}) }
 
     val defaultZdt = remember(defaultTimeZone) {
         ReminderCalculator.defaultNewReminderDateTime(defaultTimeZone)
@@ -151,7 +154,7 @@ fun TodoEditorSheet(
     }
 
     fun applyQuickPreset(rem: Reminder) {
-        hideKeyboard()
+        dismissKeyboardRef.value()
         reminderEnabled = true
         pickedDate = ReminderCalculator.parseDate(rem.date)
         val t = ReminderCalculator.parseTime(rem.time)
@@ -161,7 +164,7 @@ fun TodoEditorSheet(
 
     ModalBottomSheet(
         onDismissRequest = {
-            hideKeyboard()
+            dismissKeyboardRef.value()
             val trimmed = text.trim()
             if (!explicitDiscard && trimmed.isNotEmpty() && (editingTodo == null || hasChanges)) {
                 onSave(trimmed, categoryId, buildFinalReminder(), strongAlert, pinned, true)
@@ -172,17 +175,99 @@ fun TodoEditorSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        // Bottom nav inset only when IME is closed; never let sheet stretch into the top status bar / erase the outside scrim
+        contentWindowInsets = {
+            WindowInsets.navigationBars.exclude(WindowInsets.ime).only(WindowInsetsSides.Bottom)
+        },
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { dismissKeyboardRef.value() },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                BottomSheetDefaults.DragHandle()
+            }
+        },
     ) {
+        // Read FocusManager / SoftwareKeyboardController / View INSIDE ModalBottomSheet so they belong to the Dialog window
+        val sheetFocusManager = LocalFocusManager.current
+        val sheetKeyboardController = LocalSoftwareKeyboardController.current
+        val sheetView = LocalView.current
+
+        fun hideKeyboard() {
+            sheetFocusManager.clearFocus(force = true)
+            sheetKeyboardController?.hide()
+            val imm = sheetView.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(sheetView.windowToken, 0)
+        }
+        SideEffect {
+            dismissKeyboardRef.value = ::hideKeyboard
+        }
+
+        // Keep the sheet anchored below a constant, generous dimmed scrim band at the top even while the IME rises,
+        // so the top edge stays calm (never shooting into the status bar) and the user can always tap outside to auto-save.
+        val density = LocalDensity.current
+        val fallbackScreenHeightDp = LocalConfiguration.current.screenHeightDp.dp
+        val measuredWindowHeightDp = with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
+        val windowHeightDp = if (measuredWindowHeightDp > 0.dp) measuredWindowHeightDp else fallbackScreenHeightDp
+        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
+        val navBarBottomDp = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
+        val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
+        val bottomInsetDp = maxOf(imeBottomDp, navBarBottomDp)
+        val availableAboveBottomDp = (windowHeightDp - bottomInsetDp).coerceAtLeast(320.dp)
+        val topScrimReserveDp = statusBarTopDp + 120.dp
+        val maxContentHeightDp = (availableAboveBottomDp - topScrimReserveDp - 36.dp).coerceAtLeast(220.dp)
+
+        var sheetRootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+        var textFieldBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .nestedScroll(scrollHideKeyboard)
+                .heightIn(max = maxContentHeightDp)
+                .onGloballyPositioned { coords -> sheetRootCoords = coords }
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = { hideKeyboard() })
+                    val touchSlop = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = PointerEventPass.Initial,
+                        )
+                        val rootCoords = sheetRootCoords
+                        val tfBounds = textFieldBoundsInWindow
+                        val tappedInsideInput = if (rootCoords != null && rootCoords.isAttached && tfBounds != null) {
+                            tfBounds.contains(rootCoords.localToWindow(down.position))
+                        } else {
+                            false
+                        }
+                        if (tappedInsideInput) {
+                            return@awaitEachGesture
+                        }
+
+                        var movedBeyondSlop = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                if (!movedBeyondSlop) {
+                                    hideKeyboard()
+                                }
+                                break
+                            }
+                            if (!movedBeyondSlop && (change.position - down.position).getDistance() > touchSlop) {
+                                movedBeyondSlop = true
+                                hideKeyboard()
+                            }
+                        }
+                    }
                 }
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
-                .navigationBarsPadding()
                 .padding(bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -223,7 +308,11 @@ fun TodoEditorSheet(
                 value = text,
                 onValueChange = { text = it },
                 placeholder = { Text("写下要做的事…") },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coords ->
+                        textFieldBoundsInWindow = coords.boundsInWindow()
+                    },
                 shape = RoundedCornerShape(14.dp),
                 minLines = 2,
                 maxLines = 4,
