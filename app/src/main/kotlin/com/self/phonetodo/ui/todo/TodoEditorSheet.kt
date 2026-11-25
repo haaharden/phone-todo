@@ -2,11 +2,18 @@ package com.self.phonetodo.ui.todo
 
 import android.content.Context
 import android.view.inputmethod.InputMethodManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,52 +22,50 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.model.Category
@@ -70,14 +75,21 @@ import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.ui.components.WheelDateTimePicker
+import kotlinx.coroutines.launch
 
 /**
- * Single-screen bottom sheet for creating/editing a todo.
- * - Timing reminder enabled by default for new todos (zero switch friction).
- * - Tapping anywhere outside the text input (or scrolling/spinning wheels) hides the soft keyboard automatically.
- * - Dismissing outside / swiping down / pressing Back auto-saves non-blank changes (explicit "取消" discards).
+ * Single-screen in-window overlay bottom sheet for creating/editing a todo.
+ *
+ * Rendered directly inside MainActivity's edge-to-edge root Box (instead of Material3's
+ * ModalBottomSheet Dialog which hardcodes outer imePadding() + SOFT_INPUT_ADJUST_RESIZE):
+ * - Zero vertical jump or snap-back when the soft keyboard opens or closes (the text box
+ *   sits near the top of the sheet, well above the keyboard, so the sheet stays rock-steady
+ *   and the top dimmed scrim always remains wide open and tappable).
+ * - FocusManager, SoftwareKeyboardController, and InputMethodManager all share MainActivity's
+ *   window, so tapping or dragging anywhere outside the text input dismisses the keyboard instantly.
+ * - Tapping outside, swiping down, or pressing Back auto-saves non-blank edits; "取消" discards.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TodoEditorSheet(
     editingTodo: Todo?,
@@ -95,9 +107,18 @@ fun TodoEditorSheet(
     ) -> Unit,
     onDelete: (() -> Unit)? = null,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // Populated inside ModalBottomSheet content so focus/keyboard calls target the Dialog's own window & FocusOwner.
-    val dismissKeyboardRef = remember { mutableStateOf<() -> Unit>({}) }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val rootView = LocalView.current
+
+    fun hideKeyboard() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        val imm = rootView.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(rootView.windowToken, 0)
+    }
 
     val defaultZdt = remember(defaultTimeZone) {
         ReminderCalculator.defaultNewReminderDateTime(defaultTimeZone)
@@ -125,7 +146,6 @@ fun TodoEditorSheet(
     var repeat by remember(editingTodo) { mutableStateOf(initialRepeat) }
     var strongAlert by remember(editingTodo) { mutableStateOf(initialStrongAlert) }
     var pinned by remember(editingTodo) { mutableStateOf(initialPinned) }
-    var explicitDiscard by remember(editingTodo) { mutableStateOf(false) }
 
     val reminderFieldsChanged = reminderEnabled != initialReminderEnabled ||
         (
@@ -154,7 +174,7 @@ fun TodoEditorSheet(
     }
 
     fun applyQuickPreset(rem: Reminder) {
-        dismissKeyboardRef.value()
+        hideKeyboard()
         reminderEnabled = true
         pickedDate = ReminderCalculator.parseDate(rem.date)
         val t = ReminderCalculator.parseTime(rem.time)
@@ -162,75 +182,94 @@ fun TodoEditorSheet(
         pickedMinute = t.minute
     }
 
-    ModalBottomSheet(
-        onDismissRequest = {
-            dismissKeyboardRef.value()
-            val trimmed = text.trim()
-            if (!explicitDiscard && trimmed.isNotEmpty() && (editingTodo == null || hasChanges)) {
-                onSave(trimmed, categoryId, buildFinalReminder(), strongAlert, pinned, true)
+    // Smooth entry/exit and interactive downward drag
+    val enterProgress = remember { Animatable(0f) }
+    val dragOffsetPx = remember { Animatable(0f) }
+    var sheetHeightPx by remember { mutableFloatStateOf(with(density) { 640.dp.toPx() }) }
+    var isClosing by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        enterProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 230, easing = FastOutSlowInEasing),
+        )
+    }
+
+    fun closeWithAnimation(afterClose: () -> Unit) {
+        if (isClosing) return
+        isClosing = true
+        hideKeyboard()
+        scope.launch {
+            enterProgress.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 170, easing = FastOutSlowInEasing),
+            )
+            afterClose()
+        }
+    }
+
+    fun dismissAutoSave() {
+        val trimmed = text.trim()
+        val shouldAutoSave = trimmed.isNotEmpty() && (editingTodo == null || hasChanges)
+        val finalRem = if (shouldAutoSave) buildFinalReminder() else null
+        closeWithAnimation {
+            if (shouldAutoSave) {
+                onSave(trimmed, categoryId, finalRem, strongAlert, pinned, true)
             } else {
                 onDismiss()
             }
-        },
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
-        // Bottom nav inset only when IME is closed; never let sheet stretch into the top status bar / erase the outside scrim
-        contentWindowInsets = {
-            WindowInsets.navigationBars.exclude(WindowInsets.ime).only(WindowInsetsSides.Bottom)
-        },
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { dismissKeyboardRef.value() },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                BottomSheetDefaults.DragHandle()
+        }
+    }
+
+    // Back gesture closes keyboard first (handled natively by Android IME); next Back auto-saves & closes sheet
+    BackHandler(enabled = !isClosing) {
+        dismissAutoSave()
+    }
+
+    var sheetRootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var textFieldBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
+    val dismissThresholdPx = with(density) { 110.dp.toPx() }
+
+    val handleDragState = rememberDraggableState { delta ->
+        if (!isClosing) {
+            scope.launch {
+                dragOffsetPx.snapTo((dragOffsetPx.value + delta).coerceAtLeast(0f))
             }
-        },
-    ) {
-        // Read FocusManager / SoftwareKeyboardController / View INSIDE ModalBottomSheet so they belong to the Dialog window
-        val sheetFocusManager = LocalFocusManager.current
-        val sheetKeyboardController = LocalSoftwareKeyboardController.current
-        val sheetView = LocalView.current
-
-        fun hideKeyboard() {
-            sheetFocusManager.clearFocus(force = true)
-            sheetKeyboardController?.hide()
-            val imm = sheetView.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.hideSoftInputFromWindow(sheetView.windowToken, 0)
         }
-        SideEffect {
-            dismissKeyboardRef.value = ::hideKeyboard
-        }
+    }
 
-        // Keep the sheet anchored below a constant, generous dimmed scrim band at the top even while the IME rises,
-        // so the top edge stays calm (never shooting into the status bar) and the user can always tap outside to auto-save.
-        val density = LocalDensity.current
-        val fallbackScreenHeightDp = LocalConfiguration.current.screenHeightDp.dp
-        val measuredWindowHeightDp = with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
-        val windowHeightDp = if (measuredWindowHeightDp > 0.dp) measuredWindowHeightDp else fallbackScreenHeightDp
-        val statusBarTopDp = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
-        val navBarBottomDp = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
-        val imeBottomDp = with(density) { WindowInsets.ime.getBottom(this).toDp() }
-        val bottomInsetDp = maxOf(imeBottomDp, navBarBottomDp)
-        val availableAboveBottomDp = (windowHeightDp - bottomInsetDp).coerceAtLeast(320.dp)
-        val topScrimReserveDp = statusBarTopDp + 120.dp
-        val maxContentHeightDp = (availableAboveBottomDp - topScrimReserveDp - 36.dp).coerceAtLeast(220.dp)
+    val scrimAlpha = (0.44f * enterProgress.value * (1f - (dragOffsetPx.value / sheetHeightPx.coerceAtLeast(1f)).coerceIn(0f, 1f)))
+        .coerceIn(0f, 0.44f)
 
-        var sheetRootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-        var textFieldBoundsInWindow by remember { mutableStateOf<Rect?>(null) }
-
-        Column(
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Full-screen dimmed backdrop scrim — always exposed at top and tappable to auto-save & close
+        Box(
             modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = scrimAlpha))
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { dismissAutoSave() })
+                },
+        )
+
+        // Bottom sheet container — strictly anchored at bottom with NO imePadding, so keyboard open/close = 0px jump
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .statusBarsPadding()
+                .padding(top = 84.dp)
                 .fillMaxWidth()
-                .heightIn(max = maxContentHeightDp)
+                .onSizeChanged { size ->
+                    if (size.height > 0) {
+                        sheetHeightPx = size.height.toFloat()
+                    }
+                }
+                .graphicsLayer {
+                    translationY = (1f - enterProgress.value) * sheetHeightPx + dragOffsetPx.value
+                }
                 .onGloballyPositioned { coords -> sheetRootCoords = coords }
+                // Non-consuming Initial-pass observer: any tap or drag outside the text input dismisses the keyboard
+                // without ever swallowing button/chip/wheel clicks.
                 .pointerInput(Unit) {
                     val touchSlop = viewConfiguration.touchSlop
                     awaitEachGesture {
@@ -266,256 +305,308 @@ fun TodoEditorSheet(
                         }
                     }
                 }
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                // Absorb unhandled taps on empty sheet whitespace so they never pass through to the scrim behind it
+                .pointerInput(Unit) {
+                    detectTapGestures { /* absorbed inside sheet */ }
+                },
+            shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+            shadowElevation = 16.dp,
         ) {
-            // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = if (editingTodo == null) "新建待办" else "编辑待办",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(
-                    onClick = {
-                        explicitDiscard = true
-                        hideKeyboard()
-                        onDismiss()
-                    },
-                ) {
-                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                if (onDelete != null) {
-                    TextButton(
-                        onClick = {
-                            explicitDiscard = true
-                            hideKeyboard()
-                            onDelete()
-                        },
-                    ) {
-                        Text("删除", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            }
-
-            // Content input
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                placeholder = { Text("写下要做的事…") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onGloballyPositioned { coords ->
-                        textFieldBoundsInWindow = coords.boundsInWindow()
-                    },
-                shape = RoundedCornerShape(14.dp),
-                minLines = 2,
-                maxLines = 4,
-            )
-
-            // Categories
-            if (categories.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    FilterChip(
-                        selected = categoryId == null,
-                        onClick = {
-                            hideKeyboard()
-                            categoryId = null
-                        },
-                        label = { Text("收集箱") },
-                    )
-                    categories.forEach { cat ->
-                        FilterChip(
-                            selected = categoryId == cat.id,
-                            onClick = {
-                                hideKeyboard()
-                                categoryId = cat.id
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Drag handle + swipe-down-to-dismiss header zone
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .draggable(
+                            state = handleDragState,
+                            orientation = Orientation.Vertical,
+                            onDragStarted = { hideKeyboard() },
+                            onDragStopped = { velocity ->
+                                if (dragOffsetPx.value > dismissThresholdPx || velocity > 900f) {
+                                    dismissAutoSave()
+                                } else {
+                                    scope.launch {
+                                        dragOffsetPx.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+                                        )
+                                    }
+                                }
                             },
-                            label = { Text(cat.name) },
+                        ),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp, bottom = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(36.dp)
+                                .height(4.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f)),
                         )
                     }
-                }
-            }
 
-            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
-
-            // Timing reminder header (default ON, zero switch; quiet text button to clear or re-enable)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (reminderEnabled) "定时提醒" else "未设定时提醒",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Medium,
-                        color = if (reminderEnabled) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                    if (reminderEnabled) {
-                        val preview = ReminderCalculator.buildReminder(
-                            pickedDate,
-                            pickedHour,
-                            pickedMinute,
-                            editingTodo?.reminder?.timeZone ?: defaultTimeZone,
-                            repeat,
-                        )
+                    // Header row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 12.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
-                            text = ReminderCalculator.summary(preview),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
+                            text = if (editingTodo == null) "新建待办" else "编辑待办",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
                         )
+                        TextButton(
+                            onClick = { closeWithAnimation(onDismiss) },
+                        ) {
+                            Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (onDelete != null) {
+                            TextButton(
+                                onClick = { closeWithAnimation(onDelete) },
+                            ) {
+                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
                     }
                 }
-                TextButton(
-                    onClick = {
-                        hideKeyboard()
-                        reminderEnabled = !reminderEnabled
-                    },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+
+                // Scrollable editor form
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp)
+                        .navigationBarsPadding()
+                        .padding(top = 4.dp, bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    Text(
-                        text = if (reminderEnabled) "不提醒" else "+ 设定时",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (reminderEnabled) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                    )
-                }
-            }
-
-            // Inline dual-mode wheel + quick presets + repeat
-            AnimatedVisibility(visible = reminderEnabled) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        FilterChip(
-                            selected = false,
-                            onClick = { applyQuickPreset(ReminderCalculator.quickReminderAfterMinutes(10, defaultTimeZone)) },
-                            label = { Text("+10分") },
-                        )
-                        FilterChip(
-                            selected = false,
-                            onClick = { applyQuickPreset(ReminderCalculator.quickReminderAfterMinutes(60, defaultTimeZone)) },
-                            label = { Text("+1小时") },
-                        )
-                        FilterChip(
-                            selected = false,
-                            onClick = { applyQuickPreset(ReminderCalculator.quickReminderTodayOrTomorrowAt(20, 0, defaultTimeZone)) },
-                            label = { Text("今晚20:00") },
-                        )
-                        FilterChip(
-                            selected = false,
-                            onClick = {
-                                applyQuickPreset(
-                                    ReminderCalculator.quickReminderTodayOrTomorrowAt(9, 0, defaultTimeZone, forceTomorrow = true),
-                                )
+                    // Content input
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        placeholder = { Text("写下要做的事…") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { coords ->
+                                textFieldBoundsInWindow = coords.boundsInWindow()
                             },
-                            label = { Text("明早09:00") },
-                        )
-                    }
-
-                    WheelDateTimePicker(
-                        selectedDate = pickedDate,
-                        selectedHour = pickedHour,
-                        selectedMinute = pickedMinute,
-                        onDateChanged = { pickedDate = it },
-                        onHourChanged = { pickedHour = it },
-                        onMinuteChanged = { pickedMinute = it },
-                        onInteract = ::hideKeyboard,
+                        shape = RoundedCornerShape(14.dp),
+                        minLines = 2,
+                        maxLines = 4,
                     )
 
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        listOf(
-                            RepeatKind.NONE to "不重复",
-                            RepeatKind.DAILY to "每天",
-                            RepeatKind.WEEKLY to "每周",
-                            RepeatKind.MONTHLY to "每月",
-                            RepeatKind.YEARLY to "每年",
-                        ).forEach { (kind, label) ->
+                    // Categories
+                    if (categories.isNotEmpty()) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
                             FilterChip(
-                                selected = repeat.kind == kind,
+                                selected = categoryId == null,
                                 onClick = {
                                     hideKeyboard()
-                                    repeat = repeat.copy(kind = kind)
+                                    categoryId = null
                                 },
-                                label = { Text(label) },
+                                label = { Text("收集箱") },
+                            )
+                            categories.forEach { cat ->
+                                FilterChip(
+                                    selected = categoryId == cat.id,
+                                    onClick = {
+                                        hideKeyboard()
+                                        categoryId = cat.id
+                                    },
+                                    label = { Text(cat.name) },
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Timing reminder header (default ON, zero switch; quiet text button to clear or re-enable)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (reminderEnabled) "定时提醒" else "未设定时提醒",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = if (reminderEnabled) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                            if (reminderEnabled) {
+                                val preview = ReminderCalculator.buildReminder(
+                                    pickedDate,
+                                    pickedHour,
+                                    pickedMinute,
+                                    editingTodo?.reminder?.timeZone ?: defaultTimeZone,
+                                    repeat,
+                                )
+                                Text(
+                                    text = ReminderCalculator.summary(preview),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        TextButton(
+                            onClick = {
+                                hideKeyboard()
+                                reminderEnabled = !reminderEnabled
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                text = if (reminderEnabled) "不提醒" else "+ 设定时",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (reminderEnabled) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
                             )
                         }
                     }
 
-                    if (repeat.kind == RepeatKind.WEEKLY) {
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf(1 to "一", 2 to "二", 3 to "三", 4 to "四", 5 to "五", 6 to "六", 0 to "日")
-                                .forEach { (dayInt, dayLabel) ->
-                                    val selected = dayInt in repeat.weekdays
+                    // Inline dual-mode wheel + quick presets + repeat
+                    AnimatedVisibility(visible = reminderEnabled) {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { applyQuickPreset(ReminderCalculator.quickReminderAfterMinutes(10, defaultTimeZone)) },
+                                    label = { Text("+10分") },
+                                )
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { applyQuickPreset(ReminderCalculator.quickReminderAfterMinutes(60, defaultTimeZone)) },
+                                    label = { Text("+1小时") },
+                                )
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { applyQuickPreset(ReminderCalculator.quickReminderTodayOrTomorrowAt(20, 0, defaultTimeZone)) },
+                                    label = { Text("今晚20:00") },
+                                )
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        applyQuickPreset(
+                                            ReminderCalculator.quickReminderTodayOrTomorrowAt(9, 0, defaultTimeZone, forceTomorrow = true),
+                                        )
+                                    },
+                                    label = { Text("明早09:00") },
+                                )
+                            }
+
+                            WheelDateTimePicker(
+                                selectedDate = pickedDate,
+                                selectedHour = pickedHour,
+                                selectedMinute = pickedMinute,
+                                onDateChanged = { pickedDate = it },
+                                onHourChanged = { pickedHour = it },
+                                onMinuteChanged = { pickedMinute = it },
+                                onInteract = ::hideKeyboard,
+                            )
+
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                listOf(
+                                    RepeatKind.NONE to "不重复",
+                                    RepeatKind.DAILY to "每天",
+                                    RepeatKind.WEEKLY to "每周",
+                                    RepeatKind.MONTHLY to "每月",
+                                    RepeatKind.YEARLY to "每年",
+                                ).forEach { (kind, label) ->
                                     FilterChip(
-                                        selected = selected,
+                                        selected = repeat.kind == kind,
                                         onClick = {
                                             hideKeyboard()
-                                            val nextDays = if (selected) repeat.weekdays - dayInt else repeat.weekdays + dayInt
-                                            repeat = repeat.copy(weekdays = nextDays)
+                                            repeat = repeat.copy(kind = kind)
                                         },
-                                        label = { Text("周$dayLabel") },
+                                        label = { Text(label) },
                                     )
                                 }
+                            }
+
+                            if (repeat.kind == RepeatKind.WEEKLY) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(1 to "一", 2 to "二", 3 to "三", 4 to "四", 5 to "五", 6 to "六", 0 to "日")
+                                        .forEach { (dayInt, dayLabel) ->
+                                            val selected = dayInt in repeat.weekdays
+                                            FilterChip(
+                                                selected = selected,
+                                                onClick = {
+                                                    hideKeyboard()
+                                                    val nextDays = if (selected) repeat.weekdays - dayInt else repeat.weekdays + dayInt
+                                                    repeat = repeat.copy(weekdays = nextDays)
+                                                },
+                                                label = { Text("周$dayLabel") },
+                                            )
+                                        }
+                                }
+                            }
                         }
                     }
+
+                    // Compact inline options row (Strong alert & Pin)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilterChip(
+                            selected = strongAlert,
+                            onClick = {
+                                hideKeyboard()
+                                strongAlert = !strongAlert
+                            },
+                            label = { Text("闹钟级强提醒") },
+                        )
+                        FilterChip(
+                            selected = pinned,
+                            onClick = {
+                                hideKeyboard()
+                                pinned = !pinned
+                            },
+                            label = { Text("置顶") },
+                        )
+                    }
+
+                    Spacer(Modifier.height(2.dp))
+
+                    Button(
+                        onClick = {
+                            val trimmed = text.trim()
+                            val finalRem = buildFinalReminder()
+                            closeWithAnimation {
+                                onSave(trimmed, categoryId, finalRem, strongAlert, pinned, false)
+                            }
+                        },
+                        enabled = text.isNotBlank() && !isClosing,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Text(if (editingTodo == null) "添加待办" else "保存", fontWeight = FontWeight.SemiBold)
+                    }
                 }
-            }
-
-            // Compact inline options row (Strong alert & Pin)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilterChip(
-                    selected = strongAlert,
-                    onClick = {
-                        hideKeyboard()
-                        strongAlert = !strongAlert
-                    },
-                    label = { Text("闹钟级强提醒") },
-                )
-                FilterChip(
-                    selected = pinned,
-                    onClick = {
-                        hideKeyboard()
-                        pinned = !pinned
-                    },
-                    label = { Text("置顶") },
-                )
-            }
-
-            Spacer(Modifier.height(2.dp))
-
-            Button(
-                onClick = {
-                    hideKeyboard()
-                    onSave(text.trim(), categoryId, buildFinalReminder(), strongAlert, pinned, false)
-                },
-                enabled = text.isNotBlank(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp),
-                shape = RoundedCornerShape(14.dp),
-            ) {
-                Text(if (editingTodo == null) "添加待办" else "保存", fontWeight = FontWeight.SemiBold)
             }
         }
     }

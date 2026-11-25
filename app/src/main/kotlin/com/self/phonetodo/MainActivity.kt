@@ -541,60 +541,60 @@ private fun PhoneTodoRoot(
                 }
             }
         }
-    }
 
-    if (showEditorSheet) {
-        val defaultCat = when (selectedCategoryFilter) {
-            null, "__inbox__" -> null
-            else -> selectedCategoryFilter
-        }
-        TodoEditorSheet(
-            editingTodo = editingTodo,
-            categories = todoData.activeCategories(),
-            defaultCategoryId = defaultCat,
-            defaultTimeZone = settings.defaultTimeZone,
-            onDismiss = { showEditorSheet = false },
-            onSave = { text, catId, reminder, strongAlert, pinned, autoSaved ->
-                val target = editingTodo
-                if (target == null) {
-                    app.todoRepository.addTodo(
-                        text = text,
-                        categoryId = catId,
-                        reminder = reminder,
-                        strongAlert = strongAlert,
-                        pinned = pinned,
-                    )
-                } else {
-                    app.todoRepository.updateTodo(
-                        target.copy(
-                            text = text.trim(),
+        if (showEditorSheet) {
+            val defaultCat = when (selectedCategoryFilter) {
+                null, "__inbox__" -> null
+                else -> selectedCategoryFilter
+            }
+            TodoEditorSheet(
+                editingTodo = editingTodo,
+                categories = todoData.activeCategories(),
+                defaultCategoryId = defaultCat,
+                defaultTimeZone = settings.defaultTimeZone,
+                onDismiss = { showEditorSheet = false },
+                onSave = { text, catId, reminder, strongAlert, pinned, autoSaved ->
+                    val target = editingTodo
+                    if (target == null) {
+                        app.todoRepository.addTodo(
+                            text = text,
                             categoryId = catId,
                             reminder = reminder,
                             strongAlert = strongAlert,
                             pinned = pinned,
-                        ),
-                    )
-                }
-                showEditorSheet = false
-                if (autoSaved) {
-                    Toast.makeText(activity, "已自动保存", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onDelete = editingTodo?.let { target ->
-                {
-                    val deleted = app.todoRepository.deleteTodo(target.id)
-                    showEditorSheet = false
-                    if (deleted != null) {
-                        val label = deleted.text.take(14) + if (deleted.text.length > 14) "…" else ""
-                        undoBanner = UndoBannerState(
-                            id = System.nanoTime(),
-                            message = "已删除「$label」",
-                            onUndo = { app.todoRepository.restoreTodo(deleted) },
+                        )
+                    } else {
+                        app.todoRepository.updateTodo(
+                            target.copy(
+                                text = text.trim(),
+                                categoryId = catId,
+                                reminder = reminder,
+                                strongAlert = strongAlert,
+                                pinned = pinned,
+                            ),
                         )
                     }
-                }
-            },
-        )
+                    showEditorSheet = false
+                    if (autoSaved) {
+                        Toast.makeText(activity, "已自动保存", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onDelete = editingTodo?.let { target ->
+                    {
+                        val deleted = app.todoRepository.deleteTodo(target.id)
+                        showEditorSheet = false
+                        if (deleted != null) {
+                            val label = deleted.text.take(14) + if (deleted.text.length > 14) "…" else ""
+                            undoBanner = UndoBannerState(
+                                id = System.nanoTime(),
+                                message = "已删除「$label」",
+                                onUndo = { app.todoRepository.restoreTodo(deleted) },
+                            )
+                        }
+                    }
+                },
+            )
+        }
     }
 }
 
