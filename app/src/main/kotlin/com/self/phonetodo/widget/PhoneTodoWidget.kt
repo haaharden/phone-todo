@@ -29,21 +29,33 @@ import androidx.glance.unit.ColorProvider
 import com.self.phonetodo.MainActivity
 import com.self.phonetodo.PhoneTodoApp
 import com.self.phonetodo.data.UsageRepository
+import com.self.phonetodo.reminder.ReminderCalculator
+
+private data class WidgetTodoRow(
+    val title: String,
+    val isUrgentRed: Boolean,
+)
 
 class PhoneTodoWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as PhoneTodoApp
-        val overview = app.usageRepository.refresh()
-        val topTodos = app.todoRepository.topBannerTodos(3)
-        val pendingCount = app.todoRepository.pendingCount()
+        val now = System.currentTimeMillis()
+        val overview = app.usageRepository.refresh(now)
+        val allPending = ReminderCalculator.sortPendingTodos(app.todoRepository.data.value.activeTodos().filter { !it.done })
+        val todayTodos = allPending.filter { ReminderCalculator.isTodayTodo(it, now) }
+        val rows = todayTodos.take(4).map { t ->
+            val urgent = ReminderCalculator.isPastCarryover(t, now) ||
+                (t.reminder != null && ReminderCalculator.isFiredOrOverdue(t.reminder, now))
+            WidgetTodoRow(title = t.text, isUrgentRed = urgent)
+        }
 
         provideContent {
             WidgetContent(
                 unlocks = overview.todayUnlocks,
                 screenTime = UsageRepository.formatDurationShort(overview.todayScreenMillis),
-                pendingCount = pendingCount,
-                todoTitles = topTodos.map { it.text },
+                todayCount = todayTodos.size,
+                rows = rows,
             )
         }
     }
@@ -52,8 +64,8 @@ class PhoneTodoWidget : GlanceAppWidget() {
     private fun WidgetContent(
         unlocks: Int,
         screenTime: String,
-        pendingCount: Int,
-        todoTitles: List<String>,
+        todayCount: Int,
+        rows: List<WidgetTodoRow>,
     ) {
         Column(
             modifier = GlanceModifier
@@ -69,7 +81,7 @@ class PhoneTodoWidget : GlanceAppWidget() {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Phone ToDo",
+                    text = if (todayCount > 0) "今日 $todayCount" else "今日",
                     style = TextStyle(
                         color = ColorProvider(Color(0xFFEEF2F1)),
                         fontSize = 14.sp,
@@ -78,7 +90,7 @@ class PhoneTodoWidget : GlanceAppWidget() {
                 )
                 Spacer(modifier = GlanceModifier.defaultWeight())
                 Text(
-                    text = "${unlocks}次解锁  $screenTime",
+                    text = "${unlocks}次  $screenTime",
                     style = TextStyle(
                         color = ColorProvider(Color(0xFF3DB59E)),
                         fontSize = 11.5.sp,
@@ -89,7 +101,7 @@ class PhoneTodoWidget : GlanceAppWidget() {
 
             Spacer(modifier = GlanceModifier.height(10.dp))
 
-            if (todoTitles.isEmpty()) {
+            if (rows.isEmpty()) {
                 Text(
                     text = "今日待办已清空",
                     style = TextStyle(
@@ -98,20 +110,20 @@ class PhoneTodoWidget : GlanceAppWidget() {
                     ),
                 )
             } else {
-                todoTitles.forEach { line ->
+                rows.forEach { row ->
                     Text(
-                        text = line,
+                        text = if (row.isUrgentRed) "● ${row.title}" else row.title,
                         maxLines = 1,
                         style = TextStyle(
-                            color = ColorProvider(Color(0xFFEEF2F1)),
+                            color = ColorProvider(if (row.isUrgentRed) Color(0xFFF06C6C) else Color(0xFFEEF2F1)),
                             fontSize = 13.sp,
                         ),
                         modifier = GlanceModifier.padding(vertical = 2.dp),
                     )
                 }
-                if (pendingCount > todoTitles.size) {
+                if (todayCount > rows.size) {
                     Text(
-                        text = "其余 ${pendingCount - todoTitles.size} 项",
+                        text = "其余 ${todayCount - rows.size} 项",
                         style = TextStyle(
                             color = ColorProvider(Color(0xFF818C91)),
                             fontSize = 11.sp,

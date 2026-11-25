@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Build
 import com.self.phonetodo.MainActivity
 import com.self.phonetodo.data.TodoRepository
+import com.self.phonetodo.model.Todo
 import com.self.phonetodo.model.TodoData
 
 /**
@@ -18,7 +19,6 @@ class ReminderScheduler(
     private val todoRepository: TodoRepository,
 ) {
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-    private val scheduledIds = mutableSetOf<String>()
 
     @Synchronized
     fun syncAll(data: TodoData = todoRepository.data.value, fireMissed: Boolean = false) {
@@ -26,24 +26,30 @@ class ReminderScheduler(
         val activePending = data.activeTodos().filter { !it.done && it.reminder?.nextAt != null }
         val activeIdSet = activePending.map { it.id }.toSet()
 
-        // Cancel alarms for completed/deleted/cleared todos
-        val stale = scheduledIds.filter { it !in activeIdSet }
-        for (id in stale) {
-            cancelAlarm(id)
-            scheduledIds.remove(id)
+        // Cancel alarms for ALL inactive/completed/deleted/reminder-cleared todos (survives process restarts!)
+        for (todo in data.todos) {
+            if (todo.id !in activeIdSet) {
+                cancelAlarm(todo.id)
+            }
         }
 
+        val missed = mutableListOf<Pair<Todo, Long>>()
         for (todo in activePending) {
             val nextAt = todo.reminder?.nextAt ?: continue
             if (nextAt <= now) {
+                cancelAlarm(todo.id)
                 if (fireMissed) {
-                    NotificationHelper.showTodoReminder(context, todo, late = (now - nextAt) > 90_000L)
-                    todoRepository.advanceReminderAfterFired(todo.id, nextAt)
+                    missed += todo to nextAt
                 }
                 continue
             }
             scheduleExactAlarm(todo.id, nextAt)
-            scheduledIds.add(todo.id)
+        }
+
+        // Fire missed reminders cleanly after updating scheduled alarms
+        for ((todo, nextAt) in missed) {
+            NotificationHelper.showTodoReminder(context, todo, late = (now - nextAt) > 90_000L)
+            todoRepository.advanceReminderAfterFired(todo.id, nextAt)
         }
     }
 

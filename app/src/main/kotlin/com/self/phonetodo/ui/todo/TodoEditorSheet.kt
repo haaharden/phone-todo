@@ -1,6 +1,7 @@
 package com.self.phonetodo.ui.todo
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -33,6 +34,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.model.Category
@@ -42,12 +50,12 @@ import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.ui.components.WheelDateTimePicker
-import java.time.LocalDate
 
 /**
  * Single-screen bottom sheet for creating/editing a todo.
- * Timing reminder is enabled by default for new todos (zero switch friction), with an inline
- * dual-mode precision wheel ([Date | Hour:Min] + expandable [Year | Month | Day]).
+ * - Timing reminder enabled by default for new todos (zero switch friction).
+ * - Tapping anywhere outside the text input (or scrolling/spinning wheels) hides the soft keyboard automatically.
+ * - Dismissing outside / swiping down / pressing Back auto-saves non-blank changes (explicit "取消" discards).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -63,39 +71,87 @@ fun TodoEditorSheet(
         reminder: Reminder?,
         strongAlert: Boolean,
         pinned: Boolean,
+        autoSaved: Boolean,
     ) -> Unit,
     onDelete: (() -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun hideKeyboard() {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
+
+    val scrollHideKeyboard = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                }
+                return Offset.Zero
+            }
+        }
+    }
+
     val defaultZdt = remember(defaultTimeZone) {
         ReminderCalculator.defaultNewReminderDateTime(defaultTimeZone)
     }
 
-    var text by remember(editingTodo) { mutableStateOf(editingTodo?.text.orEmpty()) }
-    var categoryId by remember(editingTodo, defaultCategoryId) {
-        mutableStateOf(editingTodo?.categoryId ?: defaultCategoryId)
-    }
-    // New todos default straight to timed reminders without needing to toggle a switch
-    var reminderEnabled by remember(editingTodo) {
-        mutableStateOf(editingTodo == null || editingTodo.reminder != null)
-    }
-
+    val initialText = remember(editingTodo) { editingTodo?.text.orEmpty() }
+    val initialCatId = remember(editingTodo, defaultCategoryId) { editingTodo?.categoryId ?: defaultCategoryId }
+    val initialReminderEnabled = remember(editingTodo) { editingTodo == null || editingTodo.reminder != null }
     val initialDate = remember(editingTodo) {
         editingTodo?.reminder?.let { ReminderCalculator.parseDate(it.date) } ?: defaultZdt.toLocalDate()
     }
     val initialTime = remember(editingTodo) {
         editingTodo?.reminder?.let { ReminderCalculator.parseTime(it.time) } ?: defaultZdt.toLocalTime()
     }
+    val initialRepeat = remember(editingTodo) { editingTodo?.reminder?.repeat ?: Repeat() }
+    val initialStrongAlert = remember(editingTodo) { editingTodo?.strongAlert ?: false }
+    val initialPinned = remember(editingTodo) { editingTodo?.pinned ?: false }
 
+    var text by remember(editingTodo) { mutableStateOf(initialText) }
+    var categoryId by remember(editingTodo, defaultCategoryId) { mutableStateOf(initialCatId) }
+    var reminderEnabled by remember(editingTodo) { mutableStateOf(initialReminderEnabled) }
     var pickedDate by remember(editingTodo) { mutableStateOf(initialDate) }
     var pickedHour by remember(editingTodo) { mutableIntStateOf(initialTime.hour) }
     var pickedMinute by remember(editingTodo) { mutableIntStateOf(initialTime.minute) }
-    var repeat by remember(editingTodo) { mutableStateOf(editingTodo?.reminder?.repeat ?: Repeat()) }
+    var repeat by remember(editingTodo) { mutableStateOf(initialRepeat) }
+    var strongAlert by remember(editingTodo) { mutableStateOf(initialStrongAlert) }
+    var pinned by remember(editingTodo) { mutableStateOf(initialPinned) }
+    var explicitDiscard by remember(editingTodo) { mutableStateOf(false) }
 
-    var strongAlert by remember(editingTodo) { mutableStateOf(editingTodo?.strongAlert ?: false) }
-    var pinned by remember(editingTodo) { mutableStateOf(editingTodo?.pinned ?: false) }
+    val reminderFieldsChanged = reminderEnabled != initialReminderEnabled ||
+        (
+            reminderEnabled && (
+                pickedDate != initialDate ||
+                    pickedHour != initialTime.hour ||
+                    pickedMinute != initialTime.minute ||
+                    repeat != initialRepeat
+                )
+            )
+
+    val hasChanges = text.trim() != initialText.trim() ||
+        categoryId != initialCatId ||
+        reminderFieldsChanged ||
+        strongAlert != initialStrongAlert ||
+        pinned != initialPinned
+
+    fun buildFinalReminder(): Reminder? {
+        if (!reminderEnabled) return null
+        // Preserve existing reminder verbatim (including lastFiredAt) when user only edited title/category/flags
+        if (editingTodo?.reminder != null && !reminderFieldsChanged) {
+            return editingTodo.reminder
+        }
+        val tz = editingTodo?.reminder?.timeZone ?: defaultTimeZone
+        return ReminderCalculator.buildReminder(pickedDate, pickedHour, pickedMinute, tz, repeat)
+    }
 
     fun applyQuickPreset(rem: Reminder) {
+        hideKeyboard()
         reminderEnabled = true
         pickedDate = ReminderCalculator.parseDate(rem.date)
         val t = ReminderCalculator.parseTime(rem.time)
@@ -104,7 +160,15 @@ fun TodoEditorSheet(
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            hideKeyboard()
+            val trimmed = text.trim()
+            if (!explicitDiscard && trimmed.isNotEmpty() && (editingTodo == null || hasChanges)) {
+                onSave(trimmed, categoryId, buildFinalReminder(), strongAlert, pinned, true)
+            } else {
+                onDismiss()
+            }
+        },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
@@ -112,6 +176,10 @@ fun TodoEditorSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .nestedScroll(scrollHideKeyboard)
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { hideKeyboard() })
+                }
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .navigationBarsPadding()
@@ -128,8 +196,23 @@ fun TodoEditorSheet(
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f),
                 )
+                TextButton(
+                    onClick = {
+                        explicitDiscard = true
+                        hideKeyboard()
+                        onDismiss()
+                    },
+                ) {
+                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 if (onDelete != null) {
-                    TextButton(onClick = onDelete) {
+                    TextButton(
+                        onClick = {
+                            explicitDiscard = true
+                            hideKeyboard()
+                            onDelete()
+                        },
+                    ) {
                         Text("删除", color = MaterialTheme.colorScheme.error)
                     }
                 }
@@ -154,13 +237,19 @@ fun TodoEditorSheet(
                 ) {
                     FilterChip(
                         selected = categoryId == null,
-                        onClick = { categoryId = null },
+                        onClick = {
+                            hideKeyboard()
+                            categoryId = null
+                        },
                         label = { Text("收集箱") },
                     )
                     categories.forEach { cat ->
                         FilterChip(
                             selected = categoryId == cat.id,
-                            onClick = { categoryId = cat.id },
+                            onClick = {
+                                hideKeyboard()
+                                categoryId = cat.id
+                            },
                             label = { Text(cat.name) },
                         )
                     }
@@ -201,7 +290,10 @@ fun TodoEditorSheet(
                     }
                 }
                 TextButton(
-                    onClick = { reminderEnabled = !reminderEnabled },
+                    onClick = {
+                        hideKeyboard()
+                        reminderEnabled = !reminderEnabled
+                    },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                 ) {
                     Text(
@@ -219,7 +311,6 @@ fun TodoEditorSheet(
             // Inline dual-mode wheel + quick presets + repeat
             AnimatedVisibility(visible = reminderEnabled) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Quick one-tap presets that smoothly spin the wheels
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -257,9 +348,9 @@ fun TodoEditorSheet(
                         onDateChanged = { pickedDate = it },
                         onHourChanged = { pickedHour = it },
                         onMinuteChanged = { pickedMinute = it },
+                        onInteract = ::hideKeyboard,
                     )
 
-                    // Compact inline repeat picker
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -273,7 +364,10 @@ fun TodoEditorSheet(
                         ).forEach { (kind, label) ->
                             FilterChip(
                                 selected = repeat.kind == kind,
-                                onClick = { repeat = repeat.copy(kind = kind) },
+                                onClick = {
+                                    hideKeyboard()
+                                    repeat = repeat.copy(kind = kind)
+                                },
                                 label = { Text(label) },
                             )
                         }
@@ -287,6 +381,7 @@ fun TodoEditorSheet(
                                     FilterChip(
                                         selected = selected,
                                         onClick = {
+                                            hideKeyboard()
                                             val nextDays = if (selected) repeat.weekdays - dayInt else repeat.weekdays + dayInt
                                             repeat = repeat.copy(weekdays = nextDays)
                                         },
@@ -302,12 +397,18 @@ fun TodoEditorSheet(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 FilterChip(
                     selected = strongAlert,
-                    onClick = { strongAlert = !strongAlert },
+                    onClick = {
+                        hideKeyboard()
+                        strongAlert = !strongAlert
+                    },
                     label = { Text("闹钟级强提醒") },
                 )
                 FilterChip(
                     selected = pinned,
-                    onClick = { pinned = !pinned },
+                    onClick = {
+                        hideKeyboard()
+                        pinned = !pinned
+                    },
                     label = { Text("置顶") },
                 )
             }
@@ -316,13 +417,8 @@ fun TodoEditorSheet(
 
             Button(
                 onClick = {
-                    val tz = editingTodo?.reminder?.timeZone ?: defaultTimeZone
-                    val finalRem = if (reminderEnabled) {
-                        ReminderCalculator.buildReminder(pickedDate, pickedHour, pickedMinute, tz, repeat)
-                    } else {
-                        null
-                    }
-                    onSave(text, categoryId, finalRem, strongAlert, pinned)
+                    hideKeyboard()
+                    onSave(text.trim(), categoryId, buildFinalReminder(), strongAlert, pinned, false)
                 },
                 enabled = text.isNotBlank(),
                 modifier = Modifier

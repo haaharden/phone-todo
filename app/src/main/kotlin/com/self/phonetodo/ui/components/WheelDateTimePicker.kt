@@ -75,6 +75,7 @@ fun WheelDateTimePicker(
     onDateChanged: (LocalDate) -> Unit,
     onHourChanged: (Int) -> Unit,
     onMinuteChanged: (Int) -> Unit,
+    onInteract: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val today = remember { LocalDate.now() }
@@ -127,7 +128,10 @@ fun WheelDateTimePicker(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expandYearMonthDay = !expandYearMonthDay }
+                    .clickable {
+                        onInteract()
+                        expandYearMonthDay = !expandYearMonthDay
+                    }
                     .padding(horizontal = 14.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -221,6 +225,7 @@ fun WheelDateTimePicker(
                             WheelColumn(
                                 items = dateLabels,
                                 selectedIndex = dateIndex,
+                                onInteract = onInteract,
                                 onSelectedIndexChanged = { idx ->
                                     val nextDate = dates.getOrNull(idx) ?: return@WheelColumn
                                     if (nextDate != selectedDate) {
@@ -233,6 +238,7 @@ fun WheelDateTimePicker(
                             WheelColumn(
                                 items = hourLabels,
                                 selectedIndex = selectedHour.coerceIn(0, 23),
+                                onInteract = onInteract,
                                 onSelectedIndexChanged = { h ->
                                     if (h != selectedHour) {
                                         onHourChanged(h)
@@ -251,6 +257,7 @@ fun WheelDateTimePicker(
                             WheelColumn(
                                 items = minuteLabels,
                                 selectedIndex = selectedMinute.coerceIn(0, 59),
+                                onInteract = onInteract,
                                 onSelectedIndexChanged = { m ->
                                     if (m != selectedMinute) {
                                         onMinuteChanged(m)
@@ -269,6 +276,7 @@ fun WheelDateTimePicker(
                             WheelColumn(
                                 items = yearLabels,
                                 selectedIndex = years.indexOf(selectedDate.year).coerceIn(0, years.lastIndex),
+                                onInteract = onInteract,
                                 onSelectedIndexChanged = { idx ->
                                     val y = years.getOrNull(idx) ?: return@WheelColumn
                                     val maxD = YearMonth.of(y, selectedDate.monthValue).lengthOfMonth()
@@ -283,6 +291,7 @@ fun WheelDateTimePicker(
                             WheelColumn(
                                 items = monthLabels,
                                 selectedIndex = (selectedDate.monthValue - 1).coerceIn(0, 11),
+                                onInteract = onInteract,
                                 onSelectedIndexChanged = { idx ->
                                     val m = (idx + 1).coerceIn(1, 12)
                                     val maxD = YearMonth.of(selectedDate.year, m).lengthOfMonth()
@@ -297,6 +306,7 @@ fun WheelDateTimePicker(
                             WheelColumn(
                                 items = dayLabels,
                                 selectedIndex = (selectedDate.dayOfMonth - 1).coerceIn(0, dayLabels.lastIndex),
+                                onInteract = onInteract,
                                 onSelectedIndexChanged = { idx ->
                                     val d = (idx + 1).coerceIn(1, daysInSelectedMonth)
                                     val next = LocalDate.of(selectedDate.year, selectedDate.monthValue, d)
@@ -318,6 +328,7 @@ fun WheelDateTimePicker(
 private fun WheelColumn(
     items: List<String>,
     selectedIndex: Int,
+    onInteract: () -> Unit,
     onSelectedIndexChanged: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -330,11 +341,23 @@ private fun WheelColumn(
         snapPosition = SnapPosition.Start,
     )
     val latestOnSelected by rememberUpdatedState(onSelectedIndexChanged)
+    val latestOnInteract by rememberUpdatedState(onInteract)
     val latestSelectedIndex by rememberUpdatedState(selectedIndex)
     val latestItemCount by rememberUpdatedState(items.size)
 
     var isProgrammaticScroll by remember { mutableStateOf(false) }
     var lastReportedFromScroll by remember { mutableIntStateOf(safeInitial) }
+
+    // Dismiss keyboard the instant the user starts dragging a wheel
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .distinctUntilChanged()
+            .collect { scrolling ->
+                if (scrolling && !isProgrammaticScroll) {
+                    latestOnInteract()
+                }
+            }
+    }
 
     // Because vertical contentPadding == itemHeight and height == 3 * itemHeight,
     // the item sitting in the center focus band ALWAYS has item.offset == 0.
@@ -390,6 +413,7 @@ private fun WheelColumn(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) {
+                        latestOnInteract()
                         if (index != latestSelectedIndex) {
                             latestOnSelected(index)
                         }

@@ -70,6 +70,7 @@ fun TodoScreen(
     todoData: TodoData,
     usageOverview: UsageOverview,
     settings: AppSettings,
+    nowMillis: Long,
     hasOverlayPermission: Boolean,
     isMonitorRunning: Boolean,
     isTopScreen: Boolean,
@@ -97,8 +98,8 @@ fun TodoScreen(
     val categoryNameMap = remember(activeCategories) { activeCategories.associate { it.id to it.name } }
     val activeTodos = remember(todoData) { todoData.activeTodos() }
     val allPending = remember(activeTodos) { ReminderCalculator.sortPendingTodos(activeTodos.filter { !it.done }) }
-    val pastCarryover = remember(allPending) { allPending.filter { ReminderCalculator.isPastCarryover(it) } }
-    val todayOnly = remember(allPending) { allPending.filter { ReminderCalculator.isTodayOnlyTodo(it) } }
+    val pastCarryover = remember(allPending, nowMillis) { allPending.filter { ReminderCalculator.isPastCarryover(it, nowMillis) } }
+    val todayOnly = remember(allPending, nowMillis) { allPending.filter { ReminderCalculator.isTodayOnlyTodo(it, nowMillis) } }
     val todayTotalCount = pastCarryover.size + todayOnly.size
 
     Column(
@@ -187,6 +188,7 @@ fun TodoScreen(
                     todayOnly = todayOnly,
                     allPendingCount = allPending.size,
                     categoryNameMap = categoryNameMap,
+                    nowMillis = nowMillis,
                     onToggleTodo = onToggleTodo,
                     onEditTodo = onEditTodo,
                     onSwitchToAll = { scope.launch { pagerState.animateScrollToPage(1) } },
@@ -198,6 +200,7 @@ fun TodoScreen(
                     categoryNameMap = categoryNameMap,
                     selectedCategoryFilter = selectedCategoryFilter,
                     showDone = settings.showDone,
+                    nowMillis = nowMillis,
                     onSelectCategoryFilter = onSelectCategoryFilter,
                     onOpenNewCategory = { showNewCatDialog = true },
                     onToggleTodo = onToggleTodo,
@@ -245,6 +248,7 @@ private fun TodayTodoPage(
     todayOnly: List<Todo>,
     allPendingCount: Int,
     categoryNameMap: Map<String, String>,
+    nowMillis: Long,
     onToggleTodo: (String) -> Unit,
     onEditTodo: (Todo) -> Unit,
     onSwitchToAll: () -> Unit,
@@ -288,6 +292,7 @@ private fun TodayTodoPage(
                     TodoPaperSheet(
                         todos = pastCarryover,
                         categoryNameMap = categoryNameMap,
+                        nowMillis = nowMillis,
                         showCategoryName = true,
                         emptyTitle = "",
                         emptySubtitle = "",
@@ -336,6 +341,7 @@ private fun TodayTodoPage(
                 TodoPaperSheet(
                     todos = todayOnly,
                     categoryNameMap = categoryNameMap,
+                    nowMillis = nowMillis,
                     showCategoryName = true,
                     emptyTitle = if (pastCarryover.isNotEmpty()) "今日暂无新增到期事项" else "今日待办已清空",
                     emptySubtitle = when {
@@ -360,6 +366,7 @@ private fun AllTodoPage(
     categoryNameMap: Map<String, String>,
     selectedCategoryFilter: String?,
     showDone: Boolean,
+    nowMillis: Long,
     onSelectCategoryFilter: (String?) -> Unit,
     onOpenNewCategory: () -> Unit,
     onToggleTodo: (String) -> Unit,
@@ -438,6 +445,7 @@ private fun AllTodoPage(
             TodoPaperSheet(
                 todos = pending,
                 categoryNameMap = categoryNameMap,
+                nowMillis = nowMillis,
                 showCategoryName = selectedCategoryFilter == null,
                 emptyTitle = "暂无未完成待办",
                 emptySubtitle = "轻触右下角加号添加新待办。",
@@ -478,6 +486,7 @@ private fun AllTodoPage(
                         TodoPaperSheet(
                             todos = done.take(60),
                             categoryNameMap = categoryNameMap,
+                            nowMillis = nowMillis,
                             showCategoryName = false,
                             emptyTitle = "",
                             emptySubtitle = "",
@@ -498,6 +507,7 @@ private fun AllTodoPage(
 private fun TodoPaperSheet(
     todos: List<Todo>,
     categoryNameMap: Map<String, String>,
+    nowMillis: Long,
     showCategoryName: Boolean,
     emptyTitle: String,
     emptySubtitle: String,
@@ -572,6 +582,7 @@ private fun TodoPaperSheet(
                     TodoPaperRow(
                         todo = todo,
                         categoryName = if (showCategoryName) todo.categoryId?.let { categoryNameMap[it] } else null,
+                        nowMillis = nowMillis,
                         onToggle = { onToggleTodo(todo.id) },
                         onClick = { onEditTodo(todo) },
                     )
@@ -740,13 +751,14 @@ private fun WatchDialTelemetryStrip(
 private fun TodoPaperRow(
     todo: Todo,
     categoryName: String?,
+    nowMillis: Long,
     onToggle: () -> Unit,
     onClick: () -> Unit,
 ) {
     val reminder = todo.reminder
-    val isPast = !todo.done && ReminderCalculator.isPastCarryover(todo)
-    val isFiredRed = !todo.done && (isPast || (reminder != null && ReminderCalculator.isFiredOrOverdue(reminder)))
-    val pastUnscheduledText = if (isPast && reminder == null) ReminderCalculator.pastUnscheduledLabel(todo) else null
+    val isPast = !todo.done && ReminderCalculator.isPastCarryover(todo, nowMillis)
+    val isFiredRed = !todo.done && (isPast || (reminder != null && ReminderCalculator.isFiredOrOverdue(reminder, nowMillis)))
+    val pastUnscheduledText = if (isPast && reminder == null) ReminderCalculator.pastUnscheduledLabel(todo, nowMillis) else null
 
     Row(
         modifier = Modifier

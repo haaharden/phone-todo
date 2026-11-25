@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -219,6 +220,21 @@ class StrongAlertActivity : ComponentActivity() {
     private fun stopAlarmFeedback() {
         runCatching { ringtone?.stop() }
         runCatching { vibrator?.cancel() }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            stopAlarmFeedback()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onStop() {
+        if (!isChangingConfigurations) {
+            stopAlarmFeedback()
+        }
+        super.onStop()
     }
 
     override fun onDestroy() {

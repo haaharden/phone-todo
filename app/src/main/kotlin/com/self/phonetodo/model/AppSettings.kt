@@ -22,7 +22,6 @@ data class AppSettings(
     val unlockBannerEnabled: Boolean = true,
     val unlockBannerCooldownSeconds: Int = 0,
     val unlockBannerAutoDismissSeconds: Int = 5,
-    val unlockBannerMaxTodos: Int = 2,
     val unlockBannerOpacity: Float = 0.96f,
     // Quiet hours for unlock banner
     val quietHoursEnabled: Boolean = false,

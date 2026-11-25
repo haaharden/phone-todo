@@ -6,14 +6,23 @@ import com.self.phonetodo.model.Todo
 import com.self.phonetodo.model.TodoData
 
 /**
- * Deterministic per-item LWW + deletedAt tombstone merger.
- * Matches DeskTodo's v3 sync semantics so Phone ToDo and DeskTodo never overwrite each other.
+ * Deterministic per-item LWW + deletedAt tombstone merger with 30-day tombstone pruning.
+ * Matches DeskTodo's v3 sync semantics so Phone ToDo and DeskTodo stay cleanly in sync without file bloat.
  */
 object SyncMerger {
 
-    fun merge(local: TodoData, remote: TodoData): TodoData {
+    const val TOMBSTONE_TTL_MS = 30L * 86_400_000L
+
+    fun merge(
+        local: TodoData,
+        remote: TodoData,
+        nowMs: Long = System.currentTimeMillis(),
+    ): TodoData {
+        val cutoff = nowMs - TOMBSTONE_TTL_MS
         val mergedCategories = mergeCategories(local.categories, remote.categories)
+            .filter { it.deletedAt == null || it.deletedAt >= cutoff }
         val mergedTodos = mergeTodos(local.todos, remote.todos)
+            .filter { it.deletedAt == null || it.deletedAt >= cutoff }
         return TodoData(
             version = DATA_VERSION,
             categories = mergedCategories,
@@ -55,7 +64,6 @@ object SyncMerger {
                 byId[rt.id] = if (rTime > lTime) rt else lt
             }
         }
-        // Keep newest created items near the top while preserving local order for ties
         return byId.values.toList()
     }
 }

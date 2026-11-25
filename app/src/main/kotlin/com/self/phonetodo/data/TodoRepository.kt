@@ -4,6 +4,7 @@ import android.content.Context
 import com.self.phonetodo.model.Category
 import com.self.phonetodo.model.DATA_VERSION
 import com.self.phonetodo.model.Reminder
+import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.model.TodoData
 import com.self.phonetodo.reminder.ReminderCalculator
@@ -132,7 +133,8 @@ class TodoRepository(private val context: Context) {
         }
     }
 
-    fun toggleTodoDone(todoId: String) {
+    fun toggleTodoDone(todoId: String): Todo? {
+        val previous = _data.value.activeTodos().firstOrNull { it.id == todoId } ?: return null
         val now = System.currentTimeMillis()
         updateData { current ->
             current.copy(
@@ -140,7 +142,12 @@ class TodoRepository(private val context: Context) {
                     if (todo.id != todoId) return@map todo
                     val nextDone = !todo.done
                     val updatedReminder = todo.reminder?.let { rem ->
-                        if (nextDone) rem.copy(lastFiredAt = null) else rem
+                        when {
+                            nextDone -> rem.copy(lastFiredAt = null)
+                            rem.nextAt == null && rem.repeat.kind != RepeatKind.NONE ->
+                                rem.copy(nextAt = ReminderCalculator.nextOccurrence(rem, now))
+                            else -> rem
+                        }
                     }
                     todo.copy(
                         done = nextDone,
@@ -151,14 +158,33 @@ class TodoRepository(private val context: Context) {
                 },
             )
         }
+        return previous
     }
 
-    fun deleteTodo(todoId: String) {
+    fun deleteTodo(todoId: String): Todo? {
+        val previous = _data.value.activeTodos().firstOrNull { it.id == todoId } ?: return null
         val now = System.currentTimeMillis()
         updateData { current ->
             current.copy(
                 todos = current.todos.map { todo ->
                     if (todo.id == todoId) todo.copy(deletedAt = now, updatedAt = now) else todo
+                },
+            )
+        }
+        return previous
+    }
+
+    /** Lossless restore for 3-second Undo (completion or deletion). */
+    fun restoreTodo(snapshot: Todo) {
+        val now = System.currentTimeMillis()
+        updateData { current ->
+            val exists = current.todos.any { it.id == snapshot.id }
+            val restored = snapshot.copy(deletedAt = null, updatedAt = now)
+            current.copy(
+                todos = if (exists) {
+                    current.todos.map { if (it.id == snapshot.id) restored else it }
+                } else {
+                    listOf(restored) + current.todos
                 },
             )
         }

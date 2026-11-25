@@ -56,13 +56,21 @@ class PhoneTodoUnitTests {
             ),
         )
 
-        val merged = SyncMerger.merge(local, remote)
+        val merged = SyncMerger.merge(local, remote, nowMs = 1_000L)
         assertEquals("工作与项目", merged.categories.first { it.id == "c1" }.name)
         assertEquals("云端新版", merged.todos.first { it.id == "t1" }.text)
         assertTrue(merged.todos.first { it.id == "t1" }.done)
         assertNotNull(merged.todos.first { it.id == "t2" }.deletedAt)
         assertEquals(2, merged.activeTodos().size)
         assertNull(merged.activeTodos().firstOrNull { it.id == "t2" })
+
+        // Tombstones older than 30 days are pruned cleanly
+        val mergedAfter31Days = SyncMerger.merge(
+            local,
+            remote,
+            nowMs = 300L + SyncMerger.TOMBSTONE_TTL_MS + 86_400_000L,
+        )
+        assertNull(mergedAfter31Days.todos.firstOrNull { it.id == "t2" })
     }
 
     @Test

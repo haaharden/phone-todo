@@ -5,6 +5,7 @@ import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.PowerManager
 import android.os.Process
 import com.self.phonetodo.model.AppUsageItem
 import com.self.phonetodo.model.DailyTrendPoint
@@ -18,6 +19,15 @@ import java.time.LocalDate
 import java.time.ZoneId
 
 class UsageRepository(private val context: Context) {
+
+    private data class SystemDayStats(
+        val unlocks: Int = 0,
+        val screenMillis: Long = 0L,
+        val longestSessionMillis: Long = 0L,
+        val hourlyMs: LongArray = LongArray(24),
+        val hourlyUnlocks: IntArray = IntArray(24),
+        val topApps: List<AppUsageItem> = emptyList(),
+    )
 
     private val db = UsageDatabase(context)
 
@@ -67,14 +77,13 @@ class UsageRepository(private val context: Context) {
         val todaySessions = byDate[today.toString()].orEmpty()
         val yesterdaySessions = byDate[yesterday.toString()].orEmpty()
 
-        val todayUnlocks = todaySessions.count { it.countedAsUnlock }
-        val todayMillis = todaySessions.sumOf { it.durationMs(now) }
-        val longestSession = todaySessions.maxOfOrNull { it.durationMs(now) } ?: 0L
+        val localUnlocks = todaySessions.count { it.countedAsUnlock }
+        val localMillis = todaySessions.sumOf { it.durationMs(now) }
+        val localLongest = todaySessions.maxOfOrNull { it.durationMs(now) } ?: 0L
 
         val yesterdayUnlocks = yesterdaySessions.count { it.countedAsUnlock }
         val yesterdayMillis = yesterdaySessions.sumOf { it.durationMs(now) }
 
-        // Hourly breakdown for today
         val hourlyMs = LongArray(24)
         val hourlyUnlocks = IntArray(24)
         val todayStartMs = today.atStartOfDay(zone).toInstant().toEpochMilli()
@@ -95,77 +104,152 @@ class UsageRepository(private val context: Context) {
             }
         }
 
+        val hasPerm = hasUsageStatsPermission()
+        val sys = if (hasPerm) queryTodaySystemStats(today, todayStartMs, now, zone) else SystemDayStats()
+
+        // Reconcile local SQLite sessions with OS kernel UsageEvents so stats stay accurate
+        // even if HyperOS temporarily reclaims the silent background listener service.
+        val effectiveTodayUnlocks = maxOf(localUnlocks, sys.unlocks)
+        val rawScreenMs = maxOf(localMillis, sys.screenMillis)
+        val effectiveTodayMillis = if (rawScreenMs == 0L && sys.topApps.isNotEmpty()) {
+            sys.topApps.sumOf { it.foregroundMillis }
+        } else {
+            rawScreenMs
+        }
+        val effectiveLongest = maxOf(localLongest, sys.longestSessionMillis)
+
         val hourly = (0..23).map { h ->
             HourlyUsage(
                 hour = h,
-                minutes = hourlyMs[h] / 60_000f,
-                unlocks = hourlyUnlocks[h],
+                minutes = maxOf(hourlyMs[h], sys.hourlyMs[h]) / 60_000f,
+                unlocks = maxOf(hourlyUnlocks[h], sys.hourlyUnlocks[h]),
             )
         }
 
         val trend = (0..6).map { offset ->
             val d = sevenDaysAgo.plusDays(offset.toLong())
             val key = d.toString()
-            val list = byDate[key].orEmpty()
-            DailyTrendPoint(
-                dateKey = key,
-                label = "${d.monthValue}/${d.dayOfMonth}",
-                unlocks = list.count { it.countedAsUnlock },
-                screenMinutes = (list.sumOf { it.durationMs(now) } / 60_000L).toInt(),
-            )
-        }
-
-        val hasPerm = hasUsageStatsPermission()
-        val topApps = if (hasPerm) queryTodayAppUsage(todayStartMs, now) else emptyList()
-
-        // If local service was just installed today, supplement screen time with UsageStats total when local is 0
-        val effectiveTodayMillis = if (todayMillis == 0L && topApps.isNotEmpty()) {
-            topApps.sumOf { it.foregroundMillis }
-        } else {
-            todayMillis
+            if (d == today) {
+                DailyTrendPoint(
+                    dateKey = key,
+                    label = "${d.monthValue}/${d.dayOfMonth}",
+                    unlocks = effectiveTodayUnlocks,
+                    screenMinutes = (effectiveTodayMillis / 60_000L).toInt(),
+                )
+            } else {
+                val list = byDate[key].orEmpty()
+                DailyTrendPoint(
+                    dateKey = key,
+                    label = "${d.monthValue}/${d.dayOfMonth}",
+                    unlocks = list.count { it.countedAsUnlock },
+                    screenMinutes = (list.sumOf { it.durationMs(now) } / 60_000L).toInt(),
+                )
+            }
         }
 
         val result = UsageOverview(
-            todayUnlocks = todayUnlocks,
+            todayUnlocks = effectiveTodayUnlocks,
             todayScreenMillis = effectiveTodayMillis,
-            longestSessionMillis = longestSession,
+            longestSessionMillis = effectiveLongest,
             yesterdayUnlocks = yesterdayUnlocks,
             yesterdayScreenMillis = yesterdayMillis,
             hourlyBreakdown = hourly,
             sevenDayTrend = trend,
-            topApps = topApps,
+            topApps = sys.topApps,
             hasUsageStatsPermission = hasPerm,
         )
         _overview.value = result
         return result
     }
 
-    private fun queryTodayAppUsage(startMs: Long, endMs: Long): List<AppUsageItem> {
-        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return emptyList()
+    private fun queryTodaySystemStats(
+        today: LocalDate,
+        startMs: Long,
+        endMs: Long,
+        zone: ZoneId,
+    ): SystemDayStats {
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return SystemDayStats()
         val durations = mutableMapOf<String, Long>()
         val activeStart = mutableMapOf<String, Long>()
+        val hourlyMs = LongArray(24)
+        val hourlyUnlocks = IntArray(24)
+
+        var sysUnlocks = 0
+        var lastUnlockMs = 0L
+        var screenOnStart: Long? = null
+        var totalScreenMs = 0L
+        var longestMs = 0L
+
+        fun accumulateScreenSegment(segStart: Long, segEnd: Long) {
+            if (segEnd <= segStart) return
+            val clampedEnd = minOf(segEnd, segStart + 8L * 3_600_000L)
+            val dur = clampedEnd - segStart
+            totalScreenMs += dur
+            if (dur > longestMs) longestMs = dur
+            var cur = maxOf(segStart, startMs)
+            while (cur < clampedEnd) {
+                val h = Instant.ofEpochMilli(cur).atZone(zone).hour
+                val hourEnd = today.atTime(h, 0).plusHours(1).atZone(zone).toInstant().toEpochMilli()
+                val sliceEnd = minOf(clampedEnd, hourEnd)
+                hourlyMs[h] += (sliceEnd - cur).coerceAtLeast(0L)
+                cur = sliceEnd
+            }
+        }
 
         runCatching {
             val events = usm.queryEvents(startMs, endMs)
             val event = UsageEvents.Event()
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
-                val pkg = event.packageName ?: continue
+                val ts = event.timeStamp
                 when (event.eventType) {
-                    UsageEvents.Event.ACTIVITY_RESUMED -> {
-                        activeStart[pkg] = event.timeStamp
+                    UsageEvents.Event.KEYGUARD_HIDDEN -> {
+                        if (ts - lastUnlockMs >= 1_500L) {
+                            sysUnlocks++
+                            lastUnlockMs = ts
+                            val h = Instant.ofEpochMilli(ts).atZone(zone).hour
+                            hourlyUnlocks[h]++
+                        }
+                        if (screenOnStart == null) screenOnStart = ts
                     }
+
+                    UsageEvents.Event.SCREEN_INTERACTIVE -> {
+                        if (screenOnStart == null) screenOnStart = ts
+                    }
+
+                    UsageEvents.Event.SCREEN_NON_INTERACTIVE -> {
+                        val s = screenOnStart
+                        if (s != null) {
+                            accumulateScreenSegment(s, ts)
+                            screenOnStart = null
+                        }
+                    }
+
+                    UsageEvents.Event.ACTIVITY_RESUMED -> {
+                        event.packageName?.let { activeStart[it] = ts }
+                    }
+
                     UsageEvents.Event.ACTIVITY_PAUSED,
                     UsageEvents.Event.ACTIVITY_STOPPED,
                     -> {
-                        val started = activeStart.remove(pkg)
-                        if (started != null && event.timeStamp > started) {
-                            durations[pkg] = (durations[pkg] ?: 0L) + (event.timeStamp - started)
+                        val pkg = event.packageName
+                        if (pkg != null) {
+                            val started = activeStart.remove(pkg)
+                            if (started != null && ts > started) {
+                                durations[pkg] = (durations[pkg] ?: 0L) + (ts - started)
+                            }
                         }
                     }
                 }
             }
-            // Close currently foregrounded app up to now
+
+            // Close active screen-on session up to now if screen is currently awake
+            val openStart = screenOnStart
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (openStart != null && pm?.isInteractive == true) {
+                accumulateScreenSegment(openStart, endMs)
+            }
+
             for ((pkg, started) in activeStart) {
                 if (endMs > started) {
                     durations[pkg] = (durations[pkg] ?: 0L) + (endMs - started)
@@ -183,7 +267,7 @@ class UsageRepository(private val context: Context) {
         )
 
         val pm = context.packageManager
-        return durations.entries
+        val topApps = durations.entries
             .filter { (pkg, ms) -> ms >= 30_000L && pkg !in ignoredPackages }
             .sortedByDescending { it.value }
             .take(15)
@@ -204,6 +288,15 @@ class UsageRepository(private val context: Context) {
                     foregroundMillis = ms,
                 )
             }
+
+        return SystemDayStats(
+            unlocks = sysUnlocks,
+            screenMillis = totalScreenMs,
+            longestSessionMillis = longestMs,
+            hourlyMs = hourlyMs,
+            hourlyUnlocks = hourlyUnlocks,
+            topApps = topApps,
+        )
     }
 
     companion object {

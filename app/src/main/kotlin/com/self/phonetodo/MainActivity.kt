@@ -10,6 +10,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +22,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -38,10 +44,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,6 +59,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.permission.XiaomiPermissionHelper
@@ -62,17 +72,26 @@ import com.self.phonetodo.ui.todo.TodoEditorSheet
 import com.self.phonetodo.ui.todo.TodoScreen
 import com.self.phonetodo.update.AppUpdater
 import com.self.phonetodo.update.ReleaseUpdateInfo
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
-import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneId
 
 private enum class MainTab { TODOS, STATS }
 private enum class OverlayPage { NONE, IMPORT, SETTINGS }
+
+private data class UndoBannerState(
+    val id: Long,
+    val message: String,
+    val onUndo: () -> Unit,
+)
 
 class MainActivity : ComponentActivity() {
 
     private var hasOverlayPermState by mutableStateOf(false)
     private var requestedTabState by mutableStateOf<MainTab?>(null)
+    private var resumeTickState by mutableIntStateOf(0)
 
     private val notifPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -102,6 +121,7 @@ class MainActivity : ComponentActivity() {
                     app = app,
                     activity = this,
                     hasOverlayPermission = hasOverlayPermState,
+                    resumeTick = resumeTickState,
                     requestedTab = requestedTabState,
                     onRequestedTabConsumed = { requestedTabState = null },
                 )
@@ -112,6 +132,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         hasOverlayPermState = XiaomiPermissionHelper.hasOverlayPermission(this)
+        resumeTickState++
         val app = application as PhoneTodoApp
         app.usageRepository.refresh()
         app.reminderScheduler.syncAll(fireMissed = true)
@@ -147,6 +168,7 @@ private fun PhoneTodoRoot(
     app: PhoneTodoApp,
     activity: MainActivity,
     hasOverlayPermission: Boolean,
+    resumeTick: Int,
     requestedTab: MainTab?,
     onRequestedTabConsumed: () -> Unit,
 ) {
@@ -160,9 +182,30 @@ private fun PhoneTodoRoot(
     var overlayPage by remember { mutableStateOf(OverlayPage.NONE) }
     var selectedCategoryFilter by remember { mutableStateOf<String?>(null) }
     var latestRelease by remember { mutableStateOf<ReleaseUpdateInfo?>(null) }
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var undoBanner by remember { mutableStateOf<UndoBannerState?>(null) }
 
     var showEditorSheet by remember { mutableStateOf(false) }
     var editingTodo by remember { mutableStateOf<Todo?>(null) }
+
+    // Live 30s clock tick + immediate refresh on resume so header date, overdue red flags, and midnight carryover stay live
+    LaunchedEffect(resumeTick) {
+        nowMillis = System.currentTimeMillis()
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+
+    // Auto-dismiss 3.5s Undo pill
+    LaunchedEffect(undoBanner?.id) {
+        if (undoBanner != null) {
+            delay(3_500L)
+            undoBanner = null
+        }
+    }
 
     LaunchedEffect(requestedTab) {
         if (requestedTab != null) {
@@ -192,9 +235,11 @@ private fun PhoneTodoRoot(
         currentTab = MainTab.TODOS
     }
 
-    val todayFormatted = remember {
-        val d = LocalDate.now()
-        val wd = when (d.dayOfWeek) {
+    val currentLocalDate = remember(nowMillis) {
+        Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+    }
+    val todayFormatted = remember(currentLocalDate) {
+        val wd = when (currentLocalDate.dayOfWeek) {
             DayOfWeek.MONDAY -> "星期一"
             DayOfWeek.TUESDAY -> "星期二"
             DayOfWeek.WEDNESDAY -> "星期三"
@@ -203,7 +248,7 @@ private fun PhoneTodoRoot(
             DayOfWeek.SATURDAY -> "星期六"
             DayOfWeek.SUNDAY -> "星期日"
         }
-        "${d.monthValue}月${d.dayOfMonth}日  $wd"
+        "${currentLocalDate.monthValue}月${currentLocalDate.dayOfMonth}日  $wd"
     }
 
     Box(
@@ -283,12 +328,23 @@ private fun PhoneTodoRoot(
                         todoData = todoData,
                         usageOverview = usageOverview,
                         settings = settings,
+                        nowMillis = nowMillis,
                         hasOverlayPermission = hasOverlayPermission,
                         isMonitorRunning = isMonitorRunning,
                         isTopScreen = overlayPage == OverlayPage.NONE && !showEditorSheet,
                         selectedCategoryFilter = selectedCategoryFilter,
                         onSelectCategoryFilter = { selectedCategoryFilter = it },
-                        onToggleTodo = { app.todoRepository.toggleTodoDone(it) },
+                        onToggleTodo = { id ->
+                            val prev = app.todoRepository.toggleTodoDone(id)
+                            if (prev != null && !prev.done) {
+                                val label = prev.text.take(14) + if (prev.text.length > 14) "…" else ""
+                                undoBanner = UndoBannerState(
+                                    id = System.nanoTime(),
+                                    message = "已完成「$label」",
+                                    onUndo = { app.todoRepository.restoreTodo(prev) },
+                                )
+                            }
+                        },
                         onEditTodo = {
                             editingTodo = it
                             showEditorSheet = true
@@ -314,6 +370,56 @@ private fun PhoneTodoRoot(
                             XiaomiPermissionHelper.openPermissionPage(activity, "usage_stats")
                         },
                     )
+                }
+            }
+        }
+
+        // Sleek 3.5s Undo Pill above the bottom dock (rescues accidental completion/deletion)
+        AnimatedVisibility(
+            visible = undoBanner != null && overlayPage == OverlayPage.NONE,
+            enter = fadeIn() + slideInVertically { it / 2 },
+            exit = fadeOut() + slideOutVertically { it / 2 },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 84.dp),
+        ) {
+            val activeUndo = undoBanner
+            if (activeUndo != null) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.onBackground,
+                    contentColor = MaterialTheme.colorScheme.background,
+                    shadowElevation = 6.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = activeUndo.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(
+                            onClick = {
+                                activeUndo.onUndo()
+                                undoBanner = null
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                text = "撤销",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -448,7 +554,7 @@ private fun PhoneTodoRoot(
             defaultCategoryId = defaultCat,
             defaultTimeZone = settings.defaultTimeZone,
             onDismiss = { showEditorSheet = false },
-            onSave = { text, catId, reminder, strongAlert, pinned ->
+            onSave = { text, catId, reminder, strongAlert, pinned, autoSaved ->
                 val target = editingTodo
                 if (target == null) {
                     app.todoRepository.addTodo(
@@ -470,11 +576,22 @@ private fun PhoneTodoRoot(
                     )
                 }
                 showEditorSheet = false
+                if (autoSaved) {
+                    Toast.makeText(activity, "已自动保存", Toast.LENGTH_SHORT).show()
+                }
             },
             onDelete = editingTodo?.let { target ->
                 {
-                    app.todoRepository.deleteTodo(target.id)
+                    val deleted = app.todoRepository.deleteTodo(target.id)
                     showEditorSheet = false
+                    if (deleted != null) {
+                        val label = deleted.text.take(14) + if (deleted.text.length > 14) "…" else ""
+                        undoBanner = UndoBannerState(
+                            id = System.nanoTime(),
+                            message = "已删除「$label」",
+                            onUndo = { app.todoRepository.restoreTodo(deleted) },
+                        )
+                    }
                 }
             },
         )

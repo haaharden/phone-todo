@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.self.phonetodo.PhoneTodoApp
+import kotlin.math.abs
 
 class ReminderReceiver : BroadcastReceiver() {
 
@@ -16,9 +17,11 @@ class ReminderReceiver : BroadcastReceiver() {
             ACTION_FIRE_REMINDER -> {
                 val firedAt = intent.getLongExtra(EXTRA_FIRED_AT, System.currentTimeMillis())
                 val todo = app.todoRepository.data.value.activeTodos().firstOrNull { it.id == todoId }
-                if (todo != null && !todo.done) {
+                val expectedAt = todo?.reminder?.nextAt
+                // Ignore stale alarms if the user already rescheduled/cleared/completed this todo
+                if (todo != null && !todo.done && expectedAt != null && abs(expectedAt - firedAt) <= 10_000L) {
                     NotificationHelper.showTodoReminder(context, todo, late = false)
-                    app.todoRepository.advanceReminderAfterFired(todo.id, firedAt)
+                    app.todoRepository.advanceReminderAfterFired(todo.id, expectedAt)
                 }
             }
 

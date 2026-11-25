@@ -1,5 +1,6 @@
 package com.self.phonetodo.reminder
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,6 +10,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.self.phonetodo.MainActivity
@@ -202,6 +204,14 @@ object NotificationHelper {
             )
             builder.setFullScreenIntent(fullScreenIntent, true)
             builder.setOngoing(true)
+
+            // When locked or screen-off, Android launches StrongAlertActivity immediately;
+            // silence the notification channel audio so it never overlaps with StrongAlertActivity's looping alarm.
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            if (!pm.isInteractive || km.isKeyguardLocked) {
+                builder.setSilent(true)
+            }
         }
 
         runCatching { nm.notify(notifId, builder.build()) }
