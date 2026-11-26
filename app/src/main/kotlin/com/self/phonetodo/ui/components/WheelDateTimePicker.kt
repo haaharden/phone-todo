@@ -244,6 +244,7 @@ fun WheelDateTimePicker(
                                         onHourChanged(h)
                                     }
                                 },
+                                circular = true,
                                 modifier = Modifier.weight(0.85f),
                             )
 
@@ -263,6 +264,7 @@ fun WheelDateTimePicker(
                                         onMinuteChanged(m)
                                     }
                                 },
+                                circular = true,
                                 modifier = Modifier.weight(0.85f),
                             )
                         }
@@ -331,10 +333,18 @@ private fun WheelColumn(
     onInteract: () -> Unit,
     onSelectedIndexChanged: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    circular: Boolean = false,
 ) {
     val itemHeight = 40.dp
-    val safeInitial = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeInitial)
+    val isCircular = circular && items.size > 1
+    val totalCount = if (isCircular) items.size * CIRCULAR_LOOP_REPEATS else items.size
+    val safeInitialLogical = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+    val safeInitialVirtual = if (isCircular) {
+        circularInitialIndex(safeInitialLogical, items.size)
+    } else {
+        safeInitialLogical
+    }
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = safeInitialVirtual)
     // SnapPosition.Start aligns the snapped item's top to offset == 0 (exact start of the center band after itemHeight top padding)
     val flingBehavior = rememberSnapFlingBehavior(
         lazyListState = listState,
@@ -344,9 +354,10 @@ private fun WheelColumn(
     val latestOnInteract by rememberUpdatedState(onInteract)
     val latestSelectedIndex by rememberUpdatedState(selectedIndex)
     val latestItemCount by rememberUpdatedState(items.size)
+    val latestIsCircular by rememberUpdatedState(isCircular)
 
     var isProgrammaticScroll by remember { mutableStateOf(false) }
-    var lastReportedFromScroll by remember { mutableIntStateOf(safeInitial) }
+    var lastReportedFromScroll by remember { mutableIntStateOf(safeInitialLogical) }
 
     // Dismiss keyboard the instant the user starts dragging a wheel
     LaunchedEffect(listState) {
@@ -361,7 +372,7 @@ private fun WheelColumn(
 
     // Because vertical contentPadding == itemHeight and height == 3 * itemHeight,
     // the item sitting in the center focus band ALWAYS has item.offset == 0.
-    val centeredIndex by remember {
+    val centeredVirtualIndex by remember {
         derivedStateOf {
             val visible = listState.layoutInfo.visibleItemsInfo
             visible.minByOrNull { abs(it.offset) }?.index ?: listState.firstVisibleItemIndex
@@ -370,26 +381,38 @@ private fun WheelColumn(
 
     // Live emission as the user drags or flings the wheel (never dropped, always accurate even on immediate Save tap)
     LaunchedEffect(listState) {
-        snapshotFlow { centeredIndex }
+        snapshotFlow { centeredVirtualIndex }
             .distinctUntilChanged()
-            .collect { idx ->
-                if (!isProgrammaticScroll && idx in 0 until latestItemCount && idx != latestSelectedIndex) {
-                    lastReportedFromScroll = idx
-                    latestOnSelected(idx)
+            .collect { virtualIdx ->
+                val logicalIdx = virtualToLogicalIndex(virtualIdx, latestItemCount, latestIsCircular)
+                if (!isProgrammaticScroll && logicalIdx in 0 until latestItemCount && logicalIdx != latestSelectedIndex) {
+                    lastReportedFromScroll = logicalIdx
+                    latestOnSelected(logicalIdx)
                 }
             }
     }
 
     // Sync ONLY external programmatic updates (presets, tapping an adjacent row, or month length clamping),
     // never fighting an active user drag/fling.
-    LaunchedEffect(selectedIndex, items.size) {
-        val target = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
-        val isExternalUpdate = target != lastReportedFromScroll
-        if (isExternalUpdate && centeredIndex != target) {
+    LaunchedEffect(selectedIndex, items.size, isCircular) {
+        val targetLogical = selectedIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+        val isExternalUpdate = targetLogical != lastReportedFromScroll
+        val currentCenteredLogical = virtualToLogicalIndex(centeredVirtualIndex, items.size, isCircular)
+        if (isExternalUpdate && currentCenteredLogical != targetLogical) {
+            val targetVirtual = if (isCircular) {
+                nearestCircularTargetIndex(
+                    currentVirtualIndex = centeredVirtualIndex,
+                    targetLogicalIndex = targetLogical,
+                    itemCount = items.size,
+                    totalVirtualCount = totalCount,
+                )
+            } else {
+                targetLogical
+            }
             isProgrammaticScroll = true
-            lastReportedFromScroll = target
+            lastReportedFromScroll = targetLogical
             try {
-                listState.animateScrollToItem(target)
+                listState.animateScrollToItem(targetVirtual)
             } finally {
                 isProgrammaticScroll = false
             }
@@ -403,8 +426,9 @@ private fun WheelColumn(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier.height(itemHeight * 3),
     ) {
-        items(items.size) { index ->
-            val isSelected = index == centeredIndex
+        items(totalCount) { virtualIndex ->
+            val logicalIndex = virtualToLogicalIndex(virtualIndex, items.size, isCircular)
+            val isSelected = virtualIndex == centeredVirtualIndex
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -414,14 +438,14 @@ private fun WheelColumn(
                         indication = null,
                     ) {
                         latestOnInteract()
-                        if (index != latestSelectedIndex) {
-                            latestOnSelected(index)
+                        if (logicalIndex != latestSelectedIndex) {
+                            latestOnSelected(logicalIndex)
                         }
                     },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = items[index],
+                    text = items[logicalIndex],
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontSize = if (isSelected) 16.sp else 14.sp,
                         fontFeatureSettings = "tnum",
@@ -437,6 +461,53 @@ private fun WheelColumn(
                 )
             }
         }
+    }
+}
+
+internal const val CIRCULAR_LOOP_REPEATS = 1000
+
+internal fun circularInitialIndex(
+    selectedIndex: Int,
+    itemCount: Int,
+    repeats: Int = CIRCULAR_LOOP_REPEATS,
+): Int {
+    if (itemCount <= 0) return 0
+    val normalized = selectedIndex.mod(itemCount)
+    return (repeats / 2) * itemCount + normalized
+}
+
+internal fun virtualToLogicalIndex(
+    virtualIndex: Int,
+    itemCount: Int,
+    circular: Boolean,
+): Int {
+    if (itemCount <= 0) return 0
+    return if (circular) {
+        virtualIndex.mod(itemCount)
+    } else {
+        virtualIndex.coerceIn(0, itemCount - 1)
+    }
+}
+
+internal fun nearestCircularTargetIndex(
+    currentVirtualIndex: Int,
+    targetLogicalIndex: Int,
+    itemCount: Int,
+    totalVirtualCount: Int,
+    repeats: Int = CIRCULAR_LOOP_REPEATS,
+): Int {
+    if (itemCount <= 0 || totalVirtualCount <= 0) return 0
+    val currentLogical = currentVirtualIndex.mod(itemCount)
+    val normalizedTarget = targetLogicalIndex.mod(itemCount)
+    var delta = normalizedTarget - currentLogical
+    val half = itemCount / 2
+    if (delta > half) delta -= itemCount
+    if (delta < -half) delta += itemCount
+    val candidate = currentVirtualIndex + delta
+    return if (candidate in 0 until totalVirtualCount) {
+        candidate
+    } else {
+        circularInitialIndex(normalizedTarget, itemCount, repeats)
     }
 }
 

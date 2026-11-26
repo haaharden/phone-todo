@@ -11,6 +11,10 @@ import com.self.phonetodo.model.TodoData
 import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.sync.GithubSyncManager
 import com.self.phonetodo.sync.SyncMerger
+import com.self.phonetodo.ui.components.CIRCULAR_LOOP_REPEATS
+import com.self.phonetodo.ui.components.circularInitialIndex
+import com.self.phonetodo.ui.components.nearestCircularTargetIndex
+import com.self.phonetodo.ui.components.virtualToLogicalIndex
 import com.self.phonetodo.update.AppUpdater
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -420,5 +424,50 @@ class PhoneTodoUnitTests {
         } finally {
             tempDir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun wheelPicker_circularWrappingMapsBoundariesAndShortestJump() {
+        val minuteCount = 60
+        val minuteTotal = minuteCount * CIRCULAR_LOOP_REPEATS
+        val startAtZeroMinute = circularInitialIndex(0, minuteCount)
+        // Above 00 wraps back to 59, below 00 is 01
+        assertEquals(0, virtualToLogicalIndex(startAtZeroMinute, minuteCount, circular = true))
+        assertEquals(59, virtualToLogicalIndex(startAtZeroMinute - 1, minuteCount, circular = true))
+        assertEquals(1, virtualToLogicalIndex(startAtZeroMinute + 1, minuteCount, circular = true))
+
+        // Shortest-path target across 00 <-> 59 boundary
+        assertEquals(
+            startAtZeroMinute - 1,
+            nearestCircularTargetIndex(startAtZeroMinute, 59, minuteCount, minuteTotal),
+        )
+        assertEquals(
+            startAtZeroMinute,
+            nearestCircularTargetIndex(startAtZeroMinute - 1, 0, minuteCount, minuteTotal),
+        )
+        // Preset +10min from 58 -> 08 moves forward by +10 rather than jumping backward -50
+        val atMinute58 = circularInitialIndex(58, minuteCount)
+        assertEquals(
+            atMinute58 + 10,
+            nearestCircularTargetIndex(atMinute58, 8, minuteCount, minuteTotal),
+        )
+
+        val hourCount = 24
+        val hourTotal = hourCount * CIRCULAR_LOOP_REPEATS
+        val startAtZeroHour = circularInitialIndex(0, hourCount)
+        // Above 00 wraps back to 23, below 23 wraps to 00
+        assertEquals(23, virtualToLogicalIndex(startAtZeroHour - 1, hourCount, circular = true))
+        assertEquals(
+            startAtZeroHour - 1,
+            nearestCircularTargetIndex(startAtZeroHour, 23, hourCount, hourTotal),
+        )
+        assertEquals(
+            startAtZeroHour,
+            nearestCircularTargetIndex(startAtZeroHour - 1, 0, hourCount, hourTotal),
+        )
+
+        // Non-circular mode keeps indices clamped
+        assertEquals(0, virtualToLogicalIndex(-1, 90, circular = false))
+        assertEquals(89, virtualToLogicalIndex(120, 90, circular = false))
     }
 }
