@@ -42,7 +42,26 @@ object ReminderCalculator {
 
     fun safeZone(tz: String): ZoneId = runCatching { ZoneId.of(tz) }.getOrElse { ZoneId.of("Asia/Shanghai") }
 
-    private fun DayOfWeek.toDeskWeekday(): Int = if (this == DayOfWeek.SUNDAY) 0 else this.value
+    fun toDeskWeekday(dayOfWeek: DayOfWeek): Int = if (dayOfWeek == DayOfWeek.SUNDAY) 0 else dayOfWeek.value
+
+    fun normalizeWeekdays(days: Collection<Int>): List<Int> =
+        days.filter { it in 0..6 }.distinct().sortedBy { (it + 6) % 7 }
+
+    fun toggleWeekday(current: List<Int>, day: Int): List<Int> {
+        if (day !in 0..6) return normalizeWeekdays(current)
+        val normalized = normalizeWeekdays(current)
+        return if (day in normalized) {
+            if (normalized.size <= 1) normalized else normalized - day
+        } else {
+            normalizeWeekdays(normalized + day)
+        }
+    }
+
+    fun isCustomRepeat(repeat: Repeat): Boolean = when (repeat.kind) {
+        RepeatKind.NONE -> false
+        RepeatKind.DAILY, RepeatKind.MONTHLY, RepeatKind.YEARLY -> repeat.interval > 1
+        RepeatKind.WEEKLY -> repeat.interval > 1 || repeat.weekdays.isNotEmpty()
+    }
 
     private fun mondayOf(date: LocalDate): LocalDate = date.minusDays((date.dayOfWeek.value - 1).toLong())
 
@@ -171,14 +190,14 @@ object ReminderCalculator {
                 val days = if (rem.repeat.weekdays.isNotEmpty()) {
                     rem.repeat.weekdays.toSet()
                 } else {
-                    setOf(anchor.dayOfWeek.toDeskWeekday())
+                    setOf(toDeskWeekday(anchor.dayOfWeek))
                 }
                 val anchorMonday = mondayOf(anchor)
                 for (offset in 0 until (7 * n + 14)) {
                     val candidate = startDate.plusDays(offset.toLong())
                     val weekIndex = ChronoUnit.WEEKS.between(anchorMonday, mondayOf(candidate))
                     if (weekIndex < 0 || weekIndex % n != 0L) continue
-                    if (candidate.dayOfWeek.toDeskWeekday() !in days) continue
+                    if (toDeskWeekday(candidate.dayOfWeek) !in days) continue
                     val t = wallToEpochMs(candidate, time, zone)
                     if (t > afterEpochMs) return t
                 }
@@ -228,8 +247,8 @@ object ReminderCalculator {
             zdt.toLocalDate() == today -> "今天"
             zdt.toLocalDate() == today.plusDays(1) -> "明天"
             zdt.toLocalDate() == today.minusDays(1) -> "昨天"
-            zdt.year != today.year -> "${zdt.year}/${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[zdt.dayOfWeek.toDeskWeekday()]}"
-            else -> "${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[zdt.dayOfWeek.toDeskWeekday()]}"
+            zdt.year != today.year -> "${zdt.year}/${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[toDeskWeekday(zdt.dayOfWeek)]}"
+            else -> "${zdt.monthValue}/${zdt.dayOfMonth} 周${WEEKDAY_NAMES[toDeskWeekday(zdt.dayOfWeek)]}"
         }
         return "$datePrefix %02d:%02d".format(zdt.hour, zdt.minute)
     }
@@ -243,11 +262,25 @@ object ReminderCalculator {
                 val days = if (repeat.weekdays.isNotEmpty()) {
                     repeat.weekdays
                 } else {
-                    listOf(parseDate(anchorDate).dayOfWeek.toDeskWeekday())
+                    listOf(toDeskWeekday(parseDate(anchorDate).dayOfWeek))
                 }
-                val sorted = days.distinct().sortedBy { (it + 6) % 7 }
-                val names = sorted.joinToString("、") { "周${WEEKDAY_NAMES[it.coerceIn(0, 6)]}" }
-                "${if (n == 1) "每" else "每 $n "}周$names"
+                val sorted = normalizeWeekdays(days)
+                if (sorted.isEmpty()) return if (n == 1) "每周" else "每 $n 周"
+                if (sorted.size == 7) {
+                    return if (n == 1) "每天" else "每 $n 周每天"
+                }
+                if (sorted == listOf(6, 0)) {
+                    return if (n == 1) "每周末" else "每 $n 周 周末"
+                }
+                val isContiguous = sorted.size >= 3 && sorted.zipWithNext().all { (a, b) ->
+                    ((b + 6) % 7) - ((a + 6) % 7) == 1
+                }
+                val body = if (isContiguous) {
+                    "周${WEEKDAY_NAMES[sorted.first()]}至周${WEEKDAY_NAMES[sorted.last()]}"
+                } else {
+                    "周${sorted.joinToString("、") { WEEKDAY_NAMES[it] }}"
+                }
+                if (n == 1) "每$body" else "每 $n 周 $body"
             }
             RepeatKind.MONTHLY -> if (n == 1) "每月" else "每 $n 个月"
             RepeatKind.YEARLY -> if (n == 1) "每年" else "每 $n 年"

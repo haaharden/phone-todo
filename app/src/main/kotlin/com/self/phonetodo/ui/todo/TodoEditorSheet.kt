@@ -7,7 +7,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -27,15 +29,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -68,6 +76,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.self.phonetodo.model.Category
 import com.self.phonetodo.model.Reminder
@@ -155,6 +164,9 @@ fun TodoEditorSheet(
     var pickedHour by remember(editingTodo) { mutableIntStateOf(initialTime.hour) }
     var pickedMinute by remember(editingTodo) { mutableIntStateOf(initialTime.minute) }
     var repeat by remember(editingTodo) { mutableStateOf(initialRepeat) }
+    var customRepeatOpen by remember(editingTodo) {
+        mutableStateOf(ReminderCalculator.isCustomRepeat(initialRepeat))
+    }
     var strongAlert by remember(editingTodo) { mutableStateOf(initialStrongAlert) }
     var pinned by remember(editingTodo) { mutableStateOf(initialPinned) }
 
@@ -549,32 +561,51 @@ fun TodoEditorSheet(
                                     RepeatKind.YEARLY to "每年",
                                 ).forEach { (kind, label) ->
                                     FilterChip(
-                                        selected = repeat.kind == kind,
+                                        selected = !customRepeatOpen && repeat.kind == kind,
                                         onClick = {
                                             hideKeyboard()
-                                            repeat = repeat.copy(kind = kind)
+                                            customRepeatOpen = false
+                                            repeat = Repeat(kind = kind, interval = 1, weekdays = emptyList())
                                         },
                                         label = { Text(label) },
                                     )
                                 }
+                                FilterChip(
+                                    selected = customRepeatOpen,
+                                    onClick = {
+                                        hideKeyboard()
+                                        customRepeatOpen = true
+                                        val anchorDay = ReminderCalculator.toDeskWeekday(pickedDate.dayOfWeek)
+                                        repeat = when {
+                                            repeat.kind == RepeatKind.NONE -> Repeat(
+                                                kind = RepeatKind.WEEKLY,
+                                                interval = 1,
+                                                weekdays = listOf(anchorDay),
+                                            )
+                                            repeat.kind == RepeatKind.WEEKLY && repeat.weekdays.isEmpty() -> repeat.copy(
+                                                weekdays = listOf(anchorDay),
+                                            )
+                                            else -> repeat
+                                        }
+                                    },
+                                    label = { Text("自定义") },
+                                )
                             }
 
-                            if (repeat.kind == RepeatKind.WEEKLY) {
-                                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    listOf(1 to "一", 2 to "二", 3 to "三", 4 to "四", 5 to "五", 6 to "六", 0 to "日")
-                                        .forEach { (dayInt, dayLabel) ->
-                                            val selected = dayInt in repeat.weekdays
-                                            FilterChip(
-                                                selected = selected,
-                                                onClick = {
-                                                    hideKeyboard()
-                                                    val nextDays = if (selected) repeat.weekdays - dayInt else repeat.weekdays + dayInt
-                                                    repeat = repeat.copy(weekdays = nextDays)
-                                                },
-                                                label = { Text("周$dayLabel") },
-                                            )
-                                        }
-                                }
+                            AnimatedVisibility(visible = customRepeatOpen) {
+                                CustomRepeatPanel(
+                                    repeat = repeat,
+                                    anchorDate = "%04d-%02d-%02d".format(
+                                        pickedDate.year,
+                                        pickedDate.monthValue,
+                                        pickedDate.dayOfMonth,
+                                    ),
+                                    anchorWeekday = ReminderCalculator.toDeskWeekday(pickedDate.dayOfWeek),
+                                    onRepeatChanged = { next ->
+                                        hideKeyboard()
+                                        repeat = next
+                                    },
+                                )
                             }
                         }
                     }
@@ -640,6 +671,304 @@ fun TodoEditorSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CustomRepeatPanel(
+    repeat: Repeat,
+    anchorDate: String,
+    anchorWeekday: Int,
+    onRepeatChanged: (Repeat) -> Unit,
+) {
+    val effectiveKind = if (repeat.kind == RepeatKind.NONE) RepeatKind.WEEKLY else repeat.kind
+    val interval = repeat.interval.coerceIn(1, 99)
+    val selectedDays = remember(repeat.weekdays, anchorWeekday, effectiveKind) {
+        if (effectiveKind == RepeatKind.WEEKLY) {
+            if (repeat.weekdays.isNotEmpty()) {
+                ReminderCalculator.normalizeWeekdays(repeat.weekdays)
+            } else {
+                listOf(anchorWeekday)
+            }
+        } else {
+            emptyList()
+        }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Row 1: Interval stepper ("每 [ - ] N [ + ]") + Unit segmented selector ("天 | 周 | 月 | 年")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "每",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
+                        .padding(horizontal = 3.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = interval > 1) {
+                                onRepeatChanged(
+                                    Repeat(
+                                        kind = effectiveKind,
+                                        interval = (interval - 1).coerceAtLeast(1),
+                                        weekdays = if (effectiveKind == RepeatKind.WEEKLY) selectedDays else emptyList(),
+                                    ),
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Remove,
+                            contentDescription = "减少间隔",
+                            tint = if (interval > 1) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                            },
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+
+                    Text(
+                        text = interval.toString(),
+                        style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.widthIn(min = 26.dp),
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = interval < 99) {
+                                onRepeatChanged(
+                                    Repeat(
+                                        kind = effectiveKind,
+                                        interval = (interval + 1).coerceAtMost(99),
+                                        weekdays = if (effectiveKind == RepeatKind.WEEKLY) selectedDays else emptyList(),
+                                    ),
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = "增加间隔",
+                            tint = if (interval < 99) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                            },
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
+                        .padding(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    listOf(
+                        RepeatKind.DAILY to "天",
+                        RepeatKind.WEEKLY to "周",
+                        RepeatKind.MONTHLY to "月",
+                        RepeatKind.YEARLY to "年",
+                    ).forEach { (unitKind, unitLabel) ->
+                        val active = effectiveKind == unitKind
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                )
+                                .clickable {
+                                    val nextDays = if (unitKind == RepeatKind.WEEKLY) {
+                                        if (repeat.weekdays.isNotEmpty()) {
+                                            ReminderCalculator.normalizeWeekdays(repeat.weekdays)
+                                        } else {
+                                            listOf(anchorWeekday)
+                                        }
+                                    } else {
+                                        emptyList()
+                                    }
+                                    onRepeatChanged(
+                                        Repeat(
+                                            kind = unitKind,
+                                            interval = interval,
+                                            weekdays = nextDays,
+                                        ),
+                                    )
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = unitLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (active) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Row 2 & 3 (Weekly): 7-day equal-width toggle row + quick weekday presets
+            if (effectiveKind == RepeatKind.WEEKLY) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf(
+                        1 to "一",
+                        2 to "二",
+                        3 to "三",
+                        4 to "四",
+                        5 to "五",
+                        6 to "六",
+                        0 to "日",
+                    ).forEach { (dayInt, dayLabel) ->
+                        val selected = dayInt in selectedDays
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(34.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.88f)
+                            },
+                            border = if (selected) {
+                                null
+                            } else {
+                                BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                            },
+                            onClick = {
+                                val nextDays = ReminderCalculator.toggleWeekday(selectedDays, dayInt)
+                                onRepeatChanged(
+                                    Repeat(
+                                        kind = RepeatKind.WEEKLY,
+                                        interval = interval,
+                                        weekdays = nextDays,
+                                    ),
+                                )
+                            },
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = dayLabel,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.onPrimary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Quick presets for the most common custom weekday schedules
+                val presets = listOf(
+                    "工作日" to listOf(1, 2, 3, 4, 5),
+                    "周一至周六" to listOf(1, 2, 3, 4, 5, 6),
+                    "周末" to listOf(6, 0),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    presets.forEach { (label, days) ->
+                        val active = selectedDays == days
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (active) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+                            },
+                            border = if (active) {
+                                null
+                            } else {
+                                BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                            },
+                            onClick = {
+                                onRepeatChanged(
+                                    Repeat(
+                                        kind = RepeatKind.WEEKLY,
+                                        interval = interval,
+                                        weekdays = days,
+                                    ),
+                                )
+                            },
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (active) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Live concise rule caption
+            val effectiveRepeat = Repeat(
+                kind = effectiveKind,
+                interval = interval,
+                weekdays = if (effectiveKind == RepeatKind.WEEKLY) selectedDays else emptyList(),
+            )
+            Text(
+                text = "重复规则：${ReminderCalculator.describeRepeat(effectiveRepeat, anchorDate)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

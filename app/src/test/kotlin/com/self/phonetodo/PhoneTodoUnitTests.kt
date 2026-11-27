@@ -470,4 +470,57 @@ class PhoneTodoUnitTests {
         assertEquals(0, virtualToLogicalIndex(-1, 90, circular = false))
         assertEquals(89, virtualToLogicalIndex(120, 90, circular = false))
     }
+
+    @Test
+    fun customRepeat_monToSatSkipsSundayAndFormatsNaturally() {
+        val monToSat = Repeat(
+            kind = RepeatKind.WEEKLY,
+            interval = 1,
+            weekdays = listOf(1, 2, 3, 4, 5, 6),
+        )
+        assertTrue(ReminderCalculator.isCustomRepeat(monToSat))
+        assertFalse(ReminderCalculator.isCustomRepeat(Repeat(RepeatKind.DAILY, 1)))
+        assertFalse(ReminderCalculator.isCustomRepeat(Repeat(RepeatKind.WEEKLY, 1)))
+        assertTrue(ReminderCalculator.isCustomRepeat(Repeat(RepeatKind.DAILY, 2)))
+
+        // Saturday 09:00 fires -> next must skip Sunday (2026-11-29) and land on Monday (2026-11-30) 09:00
+        val rem = Reminder(
+            date = "2026-11-28",
+            time = "09:00",
+            timeZone = "Asia/Shanghai",
+            repeat = monToSat,
+        )
+        val sat9am = ZonedDateTime.parse("2026-11-28T09:00:00+08:00").toInstant().toEpochMilli()
+        val mon9am = ZonedDateTime.parse("2026-11-30T09:00:00+08:00").toInstant().toEpochMilli()
+        assertEquals(mon9am, ReminderCalculator.nextOccurrence(rem, sat9am))
+
+        // Created on Sunday -> first occurrence skips Sunday and lands on Monday
+        val sundayRem = rem.copy(date = "2026-11-29")
+        val sun8am = ZonedDateTime.parse("2026-11-29T08:00:00+08:00").toInstant().toEpochMilli()
+        assertEquals(mon9am, ReminderCalculator.nextOccurrence(sundayRem, sun8am))
+
+        // Every 2 weeks on Mon/Wed/Fri skips the alternating week
+        val biweeklyMwf = Reminder(
+            date = "2026-11-23", // Monday
+            time = "09:00",
+            timeZone = "Asia/Shanghai",
+            repeat = Repeat(RepeatKind.WEEKLY, interval = 2, weekdays = listOf(1, 3, 5)),
+        )
+        val friNov27 = ZonedDateTime.parse("2026-11-27T09:00:00+08:00").toInstant().toEpochMilli()
+        val monDec07 = ZonedDateTime.parse("2026-12-07T09:00:00+08:00").toInstant().toEpochMilli()
+        assertEquals(monDec07, ReminderCalculator.nextOccurrence(biweeklyMwf, friNov27))
+
+        // Toggle weekday normalizes order and never removes the last selected day
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), ReminderCalculator.toggleWeekday(listOf(1, 2, 3, 4, 5, 6, 0), 0))
+        assertEquals(listOf(1), ReminderCalculator.toggleWeekday(listOf(1), 1))
+
+        // Clean Chinese descriptions
+        assertEquals("每周一至周六", ReminderCalculator.describeRepeat(monToSat, "2026-11-28"))
+        assertEquals("每周一至周五", ReminderCalculator.describeRepeat(Repeat(RepeatKind.WEEKLY, 1, listOf(1, 2, 3, 4, 5)), "2026-11-28"))
+        assertEquals("每周末", ReminderCalculator.describeRepeat(Repeat(RepeatKind.WEEKLY, 1, listOf(6, 0)), "2026-11-28"))
+        assertEquals("每周一", ReminderCalculator.describeRepeat(Repeat(RepeatKind.WEEKLY, 1, listOf(1)), "2026-11-28"))
+        assertEquals("每天", ReminderCalculator.describeRepeat(Repeat(RepeatKind.WEEKLY, 1, listOf(1, 2, 3, 4, 5, 6, 0)), "2026-11-28"))
+        assertEquals("每 2 周 周一、三、五", ReminderCalculator.describeRepeat(biweeklyMwf.repeat, "2026-11-23"))
+        assertEquals("每 2 天", ReminderCalculator.describeRepeat(Repeat(RepeatKind.DAILY, 2), "2026-11-28"))
+    }
 }
