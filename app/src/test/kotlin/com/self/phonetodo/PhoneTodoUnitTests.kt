@@ -8,6 +8,7 @@ import com.self.phonetodo.model.Repeat
 import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
 import com.self.phonetodo.model.TodoData
+import com.self.phonetodo.reminder.NotificationHelper
 import com.self.phonetodo.reminder.ReminderCalculator
 import com.self.phonetodo.sync.GithubSyncManager
 import com.self.phonetodo.sync.SyncMerger
@@ -522,5 +523,79 @@ class PhoneTodoUnitTests {
         assertEquals("每天", ReminderCalculator.describeRepeat(Repeat(RepeatKind.WEEKLY, 1, listOf(1, 2, 3, 4, 5, 6, 0)), "2026-11-28"))
         assertEquals("每 2 周 周一、三、五", ReminderCalculator.describeRepeat(biweeklyMwf.repeat, "2026-11-23"))
         assertEquals("每 2 天", ReminderCalculator.describeRepeat(Repeat(RepeatKind.DAILY, 2), "2026-11-28"))
+    }
+
+    @Test
+    fun notificationCleanup_clearsCompletedRecurringDeletedAndKeepsPendingFired() {
+        val firedAt = ZonedDateTime.parse("2026-11-27T09:00:00+08:00").toInstant().toEpochMilli()
+        val tomorrow = ZonedDateTime.parse("2026-11-28T09:00:00+08:00").toInstant().toEpochMilli()
+
+        val pendingFired = Todo(
+            id = "pending_fired",
+            text = "待处理已响铃",
+            done = false,
+            reminder = Reminder("2026-11-27", "09:00", "Asia/Shanghai", Repeat(), nextAt = null, lastFiredAt = firedAt),
+        )
+        val completedOneOff = Todo(
+            id = "done_oneoff",
+            text = "已完成一次性任务",
+            done = true,
+            doneAt = firedAt + 60_000L,
+            reminder = Reminder("2026-11-27", "09:00", "Asia/Shanghai", Repeat(), nextAt = null, lastFiredAt = null),
+        )
+        val completedRecurringCycle = Todo(
+            id = "done_recurring_cycle",
+            text = "已完成本次的重复任务",
+            done = false,
+            reminder = Reminder(
+                "2026-11-27",
+                "09:00",
+                "Asia/Shanghai",
+                Repeat(RepeatKind.DAILY, 1),
+                nextAt = tomorrow,
+                lastFiredAt = null,
+            ),
+        )
+        val deletedTodo = Todo(
+            id = "deleted_todo",
+            text = "已删除任务",
+            deletedAt = firedAt + 60_000L,
+            reminder = Reminder("2026-11-27", "09:00", "Asia/Shanghai", Repeat(), nextAt = null, lastFiredAt = firedAt),
+        )
+        val clearedReminder = Todo(
+            id = "cleared_rem",
+            text = "已关闭提醒",
+            done = false,
+            reminder = null,
+        )
+
+        val todos = listOf(pendingFired, completedOneOff, completedRecurringCycle, deletedTodo, clearedReminder)
+        val testNotifId = NotificationHelper.notificationIdFor("test_reminder_12345")
+        val activeIds = setOf(
+            NotificationHelper.NOTIFICATION_ID_UNLOCK_FALLBACK,
+            testNotifId,
+            NotificationHelper.notificationIdFor(pendingFired.id),
+            NotificationHelper.notificationIdFor(completedOneOff.id),
+            NotificationHelper.notificationIdFor(completedRecurringCycle.id),
+            NotificationHelper.notificationIdFor(deletedTodo.id),
+            NotificationHelper.notificationIdFor(clearedReminder.id),
+        )
+
+        val toCancel = NotificationHelper.computeNotificationIdsToCancel(todos, activeIds)
+        assertEquals(
+            setOf(
+                NotificationHelper.notificationIdFor(completedOneOff.id),
+                NotificationHelper.notificationIdFor(completedRecurringCycle.id),
+                NotificationHelper.notificationIdFor(deletedTodo.id),
+                NotificationHelper.notificationIdFor(clearedReminder.id),
+            ),
+            toCancel,
+        )
+        assertFalse(NotificationHelper.notificationIdFor(pendingFired.id) in toCancel)
+        assertFalse(NotificationHelper.NOTIFICATION_ID_UNLOCK_FALLBACK in toCancel)
+        assertFalse(testNotifId in toCancel)
+
+        // Short-circuits cleanly when no status-bar notifications are active
+        assertTrue(NotificationHelper.computeNotificationIdsToCancel(todos, emptySet()).isEmpty())
     }
 }

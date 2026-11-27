@@ -19,6 +19,7 @@ import com.self.phonetodo.R
 import com.self.phonetodo.data.UsageRepository
 import com.self.phonetodo.model.RepeatKind
 import com.self.phonetodo.model.Todo
+import com.self.phonetodo.model.TodoData
 
 object NotificationHelper {
 
@@ -236,7 +237,54 @@ object NotificationHelper {
 
     fun cancelReminderNotification(context: Context, notifId: Int) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.cancel(notifId)
+        runCatching { nm.cancel(notifId) }
+    }
+
+    fun cancelTodoNotification(context: Context, todoId: String) {
+        cancelReminderNotification(context, notificationIdFor(todoId))
+    }
+
+    /**
+     * Dismisses already-posted status-bar reminder notifications whose todo has been completed
+     * (including recurring "complete this cycle"), finished permanently, deleted, snoozed,
+     * rescheduled, or cleared — whether locally or via cross-device GitHub sync.
+     */
+    fun cancelStaleReminderNotifications(context: Context, data: TodoData) {
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val activeIds = runCatching { nm.activeNotifications.map { it.id }.toSet() }.getOrNull()
+        val idsToCancel = computeNotificationIdsToCancel(data.todos, activeIds)
+        for (id in idsToCancel) {
+            runCatching { nm.cancel(id) }
+        }
+    }
+
+    internal fun shouldClearTodoNotification(todo: Todo): Boolean {
+        if (todo.deletedAt != null || todo.done) return true
+        val rem = todo.reminder ?: return true
+        return rem.lastFiredAt == null
+    }
+
+    internal fun computeNotificationIdsToCancel(
+        todos: List<Todo>,
+        activeNotificationIds: Set<Int>?,
+    ): Set<Int> {
+        if (activeNotificationIds != null && activeNotificationIds.isEmpty()) return emptySet()
+        val keepIds = todos
+            .asSequence()
+            .filter { !shouldClearTodoNotification(it) }
+            .map { notificationIdFor(it.id) }
+            .toSet()
+        val staleIds = todos
+            .asSequence()
+            .filter { shouldClearTodoNotification(it) }
+            .map { notificationIdFor(it.id) }
+            .filter { it !in keepIds }
+            .toSet()
+        return if (activeNotificationIds != null) {
+            staleIds.intersect(activeNotificationIds)
+        } else {
+            staleIds
+        }
     }
 
     fun notificationIdFor(todoId: String): Int = (todoId.hashCode() and 0x0FFFFFFF) + 2000

@@ -52,6 +52,9 @@ class ReminderScheduler(
             collected
         }
 
+        // Dismiss already-posted notifications for completed, recurring-advanced, deleted, snoozed, or rescheduled todos
+        NotificationHelper.cancelStaleReminderNotifications(context, data)
+
         // Fire missed reminders and write back strictly OUTSIDE scheduleLock
         for ((todo, nextAt) in missed) {
             NotificationHelper.showTodoReminder(context, todo, late = (now - nextAt) > 90_000L)
