@@ -17,6 +17,7 @@ import com.self.phonetodo.ui.components.circularInitialIndex
 import com.self.phonetodo.ui.components.nearestCircularTargetIndex
 import com.self.phonetodo.ui.components.virtualToLogicalIndex
 import com.self.phonetodo.update.AppUpdater
+import com.self.phonetodo.update.ReleaseUpdateInfo
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -160,6 +161,19 @@ class PhoneTodoUnitTests {
         assertTrue(AppUpdater.isRemoteVersionNewer("1.1.9", "1.2.0"))
         assertFalse(AppUpdater.isRemoteVersionNewer("1.1.0", "1.1.0"))
         assertFalse(AppUpdater.isRemoteVersionNewer("1.2.0", "1.1.5"))
+
+        val pendingAsset = ReleaseUpdateInfo(
+            tagName = "v1.3.9",
+            versionName = "1.3.9",
+            title = "Phone ToDo v1.3.9",
+            releaseNotes = "",
+            apkDownloadUrl = "",
+            apkSizeBytes = 0L,
+            htmlUrl = "https://github.com/haaharden/phone-todo/releases/tag/v1.3.9",
+            isNewer = true,
+        )
+        assertFalse(AppUpdater.hasInstallableApk(pendingAsset))
+        assertTrue(AppUpdater.hasInstallableApk(pendingAsset.copy(apkDownloadUrl = "https://example.com/app.apk")))
     }
 
     @Test

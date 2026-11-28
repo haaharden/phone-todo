@@ -1,5 +1,6 @@
 package com.self.phonetodo.ui.settings
 
+import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -52,6 +53,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -157,10 +159,26 @@ fun SettingsScreen(
         mutableStateOf(
             when {
                 latestRelease == null -> "当前版本 v${BuildConfig.VERSION_NAME}"
+                latestRelease.isNewer && latestRelease.apkDownloadUrl.isBlank() ->
+                    "发现新版本 ${latestRelease.tagName}（安装包准备中）"
                 latestRelease.isNewer -> "发现新版本 ${latestRelease.tagName}"
                 else -> "已是最新版本 v${BuildConfig.VERSION_NAME}"
             },
         )
+    }
+
+    // If an earlier background check caught a release before its APK asset finished uploading,
+    // automatically refresh once when opening Settings so the install button appears immediately.
+    LaunchedEffect(latestRelease?.tagName, latestRelease?.apkDownloadUrl) {
+        val cached = latestRelease
+        if (cached != null && cached.isNewer && cached.apkDownloadUrl.isBlank() && !updateChecking && repoInput.isNotBlank()) {
+            updateChecking = true
+            AppUpdater.checkLatestRelease(repoInput)
+                .onSuccess { refreshed ->
+                    onReleaseChecked(refreshed)
+                }
+            updateChecking = false
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -417,10 +435,11 @@ fun SettingsScreen(
                                     AppUpdater.checkLatestRelease(repoInput)
                                         .onSuccess { info ->
                                             onReleaseChecked(info)
-                                            updateStatusText = if (info.isNewer) {
-                                                "发现新版本 ${info.tagName}"
-                                            } else {
-                                                "当前已是最新版 (${info.tagName})"
+                                            updateStatusText = when {
+                                                info.isNewer && info.apkDownloadUrl.isBlank() ->
+                                                    "发现新版本 ${info.tagName}（安装包准备中）"
+                                                info.isNewer -> "发现新版本 ${info.tagName}"
+                                                else -> "当前已是最新版 (${info.tagName})"
                                             }
                                         }
                                         .onFailure { err ->
@@ -449,7 +468,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                latestRelease?.takeIf { it.isNewer && it.apkDownloadUrl.isNotBlank() }?.let { rel ->
+                latestRelease?.takeIf { it.isNewer }?.let { rel ->
                     if (rel.releaseNotes.isNotBlank()) {
                         Text(
                             text = rel.releaseNotes.take(240),
@@ -458,7 +477,62 @@ fun SettingsScreen(
                         )
                     }
 
-                    if (updateDownloading) {
+                    if (rel.apkDownloadUrl.isBlank()) {
+                        Text(
+                            text = "该版本安装包仍在上传中或暂未附带 APK，请稍候点击刷新。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (!updateChecking) {
+                                        updateChecking = true
+                                        updateStatusText = "正在重新获取安装包…"
+                                        scope.launch {
+                                            AppUpdater.checkLatestRelease(repoInput)
+                                                .onSuccess { info ->
+                                                    onReleaseChecked(info)
+                                                    updateStatusText = when {
+                                                        info.isNewer && info.apkDownloadUrl.isBlank() ->
+                                                            "发现新版本 ${info.tagName}（安装包准备中）"
+                                                        info.isNewer -> "发现新版本 ${info.tagName}"
+                                                        else -> "当前已是最新版 (${info.tagName})"
+                                                    }
+                                                }
+                                                .onFailure { err ->
+                                                    updateStatusText = err.message ?: "刷新失败"
+                                                }
+                                            updateChecking = false
+                                        }
+                                    }
+                                },
+                                enabled = !updateChecking,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(if (updateChecking) "刷新中…" else "刷新安装包")
+                            }
+                            if (rel.htmlUrl.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(rel.htmlUrl))
+                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                            )
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Text("浏览器查看")
+                                }
+                            }
+                        }
+                    } else if (updateDownloading) {
                         LinearProgressIndicator(
                             progress = { downloadProgress },
                             modifier = Modifier

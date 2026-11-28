@@ -53,6 +53,7 @@ object AppUpdater {
             val req = Request.Builder()
                 .url("https://api.github.com/repos/$cleanSlug/releases/latest")
                 .header("Accept", "application/vnd.github+json")
+                .header("Cache-Control", "no-cache")
                 .header("User-Agent", "PhoneToDo/${BuildConfig.VERSION_NAME}")
                 .get()
                 .build()
@@ -158,6 +159,9 @@ object AppUpdater {
         context.startActivity(intent)
         true
     }
+
+    fun hasInstallableApk(info: ReleaseUpdateInfo): Boolean =
+        info.isNewer && info.apkDownloadUrl.isNotBlank()
 
     fun isRemoteVersionNewer(current: String, remote: String): Boolean {
         val cParts = current.removePrefix("v").split(".", "-").mapNotNull { it.toIntOrNull() }
