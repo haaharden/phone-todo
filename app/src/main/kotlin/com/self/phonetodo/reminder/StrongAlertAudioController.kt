@@ -31,7 +31,23 @@ object StrongAlertAudioController {
     private var ringtone: Ringtone? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var cpuWakeLock: PowerManager.WakeLock? = null
     private var autoStopRunnable: Runnable? = null
+
+    /** Keeps CPU awake without turning the screen on yet (lets watch bridges dispatch while screen is still off). */
+    fun acquireCpuWakeLockBriefly(context: Context, durationMs: Long = SCREEN_WAKE_LOCK_MS) {
+        val appCtx = context.applicationContext
+        synchronized(lock) {
+            releaseCpuWakeLockLocked()
+            val pm = appCtx.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneToDo:StrongAlertCpu")
+            runCatching {
+                wl.setReferenceCounted(false)
+                wl.acquire(durationMs.coerceIn(3_000L, 30_000L))
+                cpuWakeLock = wl
+            }
+        }
+    }
 
     fun wakeScreenBriefly(context: Context, durationMs: Long = SCREEN_WAKE_LOCK_MS) {
         val appCtx = context.applicationContext
@@ -112,6 +128,7 @@ object StrongAlertAudioController {
             }
             stopAudioLocked()
             releaseWakeLockLocked()
+            releaseCpuWakeLockLocked()
             activeTodoId = null
         }
     }
@@ -132,5 +149,14 @@ object StrongAlertAudioController {
             }
         }
         wakeLock = null
+    }
+
+    private fun releaseCpuWakeLockLocked() {
+        runCatching {
+            if (cpuWakeLock?.isHeld == true) {
+                cpuWakeLock?.release()
+            }
+        }
+        cpuWakeLock = null
     }
 }

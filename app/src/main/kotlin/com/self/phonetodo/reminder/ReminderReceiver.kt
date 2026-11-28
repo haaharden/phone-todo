@@ -12,7 +12,7 @@ class ReminderReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? PhoneTodoApp ?: return
         when (intent.action) {
             ACTION_TEST_STRONG_ALERT -> {
-                StrongAlertAudioController.wakeScreenBriefly(context)
+                StrongAlertAudioController.acquireCpuWakeLockBriefly(context)
                 NotificationHelper.sendTestNotification(context, strong = true)
                 return
             }
@@ -29,7 +29,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 // Ignore stale alarms if the user already rescheduled/cleared/completed this todo
                 if (todo != null && !todo.done && expectedAt != null && abs(expectedAt - firedAt) <= 10_000L) {
                     if (todo.strongAlert) {
-                        StrongAlertAudioController.wakeScreenBriefly(context)
+                        StrongAlertAudioController.acquireCpuWakeLockBriefly(context)
                     }
                     NotificationHelper.showTodoReminder(context, todo, late = false, delayMs = 0L)
                     app.todoRepository.advanceReminderAfterFired(todo.id, expectedAt)

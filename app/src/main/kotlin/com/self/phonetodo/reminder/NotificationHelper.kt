@@ -11,6 +11,7 @@ import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.self.phonetodo.MainActivity
@@ -140,6 +141,15 @@ object NotificationHelper {
     internal fun shouldTriggerStrongAlert(strongAlert: Boolean, delayMs: Long): Boolean =
         strongAlert && delayMs <= STRONG_ALERT_MAX_DELAY_MS
 
+    /**
+     * Always use CATEGORY_REMINDER (not CATEGORY_ALARM) and non-ongoing, non-local-only flags
+     * so smartwatch companion bridges (Mi Fitness / Zepp / Wear OS / Garmin) reliably mirror
+     * strong alerts to the wrist just like regular reminders.
+     */
+    internal fun notificationCategoryForReminder(): String = NotificationCompat.CATEGORY_REMINDER
+
+    internal fun isStrongAlertNotificationOngoing(): Boolean = false
+
     fun showTodoReminder(
         context: Context,
         todo: Todo,
@@ -148,8 +158,10 @@ object NotificationHelper {
     ) {
         val appCtx = context.applicationContext
         val nm = appCtx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val pm = appCtx.getSystemService(Context.POWER_SERVICE) as PowerManager
         val notifId = notificationIdFor(todo.id)
         val triggerStrong = shouldTriggerStrongAlert(todo.strongAlert, delayMs)
+        val wasScreenOn = pm.isInteractive
 
         val openAppIntent = PendingIntent.getActivity(
             appCtx,
@@ -201,8 +213,10 @@ object NotificationHelper {
             .setContentText(todo.text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(todo.text))
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(if (triggerStrong) NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_REMINDER)
+            .setCategory(notificationCategoryForReminder())
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setLocalOnly(false)
+            .setOngoing(isStrongAlertNotificationOngoing())
             .setAutoCancel(true)
             .setContentIntent(openAppIntent)
             .addAction(0, doneActionLabel, doneIntent)
@@ -210,8 +224,9 @@ object NotificationHelper {
 
         var strongActivityIntent: Intent? = null
         if (triggerStrong) {
-            StrongAlertAudioController.wakeScreenBriefly(appCtx)
-            StrongAlertAudioController.start(appCtx, todo.id)
+            // Keep CPU awake without turning the screen on yet so watch companion bridges with
+            // "only notify watch while screen is off" still receive nm.notify() while screen is off.
+            StrongAlertAudioController.acquireCpuWakeLockBriefly(appCtx)
 
             val activityIntent = Intent(appCtx, StrongAlertActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -241,33 +256,47 @@ object NotificationHelper {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             builder.setFullScreenIntent(fullScreenIntent, true)
-            builder.setOngoing(true)
             builder.addAction(0, "关闭响铃", dismissAlarmIntent)
         }
 
+        // Post notification FIRST so smartwatch NotificationListenerService bridges receive it immediately
         runCatching { nm.notify(notifId, builder.build()) }
 
         // Multi-layer strong alert presentation:
-        // 1) Directly launch StrongAlertActivity (works immediately when unlocked or with overlay/MIUI popup perm)
-        // 2) If HyperOS/Android suppresses background Activity launch, fall back after 450ms to the floating overlay card
+        // 1) Start looping alarm audio + vibration immediately
+        // 2) Wake screen and directly launch StrongAlertActivity (brief 250ms head-start when screen was off
+        //    so watch bridges see screen-off notification state first)
+        // 3) If HyperOS/Android suppresses background Activity launch, fall back after 450ms to the floating overlay card
         if (triggerStrong && strongActivityIntent != null) {
-            runCatching { appCtx.startActivity(strongActivityIntent) }
-            mainHandler.postDelayed(
-                {
-                    if (!StrongAlertActivity.isVisibleFor(todo.id) &&
-                        StrongAlertAudioController.isActiveFor(todo.id)
-                    ) {
-                        StrongAlertOverlayController.show(
-                            context = appCtx,
-                            todoId = todo.id,
-                            todoText = todo.text,
-                            notifId = notifId,
-                            isRecurring = isRecurring,
-                        )
-                    }
-                },
-                450L,
-            )
+            StrongAlertAudioController.start(appCtx, todo.id)
+            val launchDelayMs = if (wasScreenOn) 0L else 250L
+            val launchAction = {
+                if (StrongAlertAudioController.isActiveFor(todo.id)) {
+                    StrongAlertAudioController.wakeScreenBriefly(appCtx)
+                    runCatching { appCtx.startActivity(strongActivityIntent) }
+                    mainHandler.postDelayed(
+                        {
+                            if (!StrongAlertActivity.isVisibleFor(todo.id) &&
+                                StrongAlertAudioController.isActiveFor(todo.id)
+                            ) {
+                                StrongAlertOverlayController.show(
+                                    context = appCtx,
+                                    todoId = todo.id,
+                                    todoText = todo.text,
+                                    notifId = notifId,
+                                    isRecurring = isRecurring,
+                                )
+                            }
+                        },
+                        450L,
+                    )
+                }
+            }
+            if (launchDelayMs == 0L) {
+                launchAction()
+            } else {
+                mainHandler.postDelayed(launchAction, launchDelayMs)
+            }
         }
     }
 

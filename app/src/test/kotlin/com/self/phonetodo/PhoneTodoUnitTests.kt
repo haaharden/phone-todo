@@ -608,5 +608,9 @@ class PhoneTodoUnitTests {
         assertTrue(NotificationHelper.shouldTriggerStrongAlert(strongAlert = true, delayMs = NotificationHelper.STRONG_ALERT_MAX_DELAY_MS))
         // Multi-hour backlog (e.g. phone powered off overnight) downgrades cleanly to normal missed notification
         assertFalse(NotificationHelper.shouldTriggerStrongAlert(strongAlert = true, delayMs = NotificationHelper.STRONG_ALERT_MAX_DELAY_MS + 1L))
+
+        // Watch companion compatibility: never ongoing and always uses CATEGORY_REMINDER
+        assertFalse(NotificationHelper.isStrongAlertNotificationOngoing())
+        assertEquals("reminder", NotificationHelper.notificationCategoryForReminder())
     }
 }
