@@ -57,7 +57,13 @@ class ReminderScheduler(
 
         // Fire missed reminders and write back strictly OUTSIDE scheduleLock
         for ((todo, nextAt) in missed) {
-            NotificationHelper.showTodoReminder(context, todo, late = (now - nextAt) > 90_000L)
+            val delayMs = (now - nextAt).coerceAtLeast(0L)
+            NotificationHelper.showTodoReminder(
+                context = context,
+                todo = todo,
+                late = delayMs > 90_000L,
+                delayMs = delayMs,
+            )
             todoRepository.advanceReminderAfterFired(todo.id, nextAt)
         }
     }

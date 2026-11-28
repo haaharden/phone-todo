@@ -1,14 +1,9 @@
 package com.self.phonetodo.reminder
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.Ringtone
-import android.media.RingtoneManager
-import android.os.Build
+import android.content.Intent
 import android.os.Bundle
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
+import android.os.PowerManager
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -39,6 +34,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,8 +55,10 @@ import com.self.phonetodo.ui.theme.PineAccentDark
 
 class StrongAlertActivity : ComponentActivity() {
 
-    private var ringtone: Ringtone? = null
-    private var vibrator: Vibrator? = null
+    private var todoIdState by mutableStateOf("")
+    private var todoTextState by mutableStateOf("")
+    private var notifIdState by mutableIntStateOf(-1)
+    private var isRecurringState by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,12 +67,7 @@ class StrongAlertActivity : ComponentActivity() {
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val todoId = intent.getStringExtra(ReminderReceiver.EXTRA_TODO_ID).orEmpty()
-        val todoText = intent.getStringExtra(ReminderReceiver.EXTRA_TODO_TEXT).orEmpty()
-        val notifId = intent.getIntExtra(ReminderReceiver.EXTRA_NOTIF_ID, -1)
-        val isRecurring = intent.getBooleanExtra(ReminderReceiver.EXTRA_IS_RECURRING, false)
-
-        startAlarmFeedback()
+        applyAlertIntent(intent)
 
         setContent {
             PhoneToDoTheme(themeMode = ThemeMode.DARK) {
@@ -115,7 +111,7 @@ class StrongAlertActivity : ComponentActivity() {
                             )
 
                             Text(
-                                text = todoText.ifBlank { "待办事项已到提醒时间" },
+                                text = todoTextState.ifBlank { "待办事项已到提醒时间" },
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFFEEF2F1),
@@ -130,13 +126,16 @@ class StrongAlertActivity : ComponentActivity() {
                             ) {
                                 OutlinedButton(
                                     onClick = {
-                                        stopAlarmFeedback()
+                                        val currentId = todoIdState
+                                        val currentNotifId = notifIdState
+                                        StrongAlertAudioController.stop(currentId)
+                                        StrongAlertOverlayController.dismiss(currentId)
                                         val app = application as PhoneTodoApp
-                                        if (todoId.isNotBlank() && !todoId.startsWith("test_reminder_")) {
-                                            app.todoRepository.snoozeReminder(todoId, 10L)
+                                        if (currentId.isNotBlank() && !currentId.startsWith("test_reminder_")) {
+                                            app.todoRepository.snoozeReminder(currentId, 10L)
                                         }
-                                        if (notifId > 0) {
-                                            NotificationHelper.cancelReminderNotification(this@StrongAlertActivity, notifId)
+                                        if (currentNotifId > 0) {
+                                            NotificationHelper.cancelReminderNotification(this@StrongAlertActivity, currentNotifId)
                                         }
                                         finish()
                                     },
@@ -149,16 +148,19 @@ class StrongAlertActivity : ComponentActivity() {
 
                                 Button(
                                     onClick = {
-                                        stopAlarmFeedback()
+                                        val currentId = todoIdState
+                                        val currentNotifId = notifIdState
+                                        StrongAlertAudioController.stop(currentId)
+                                        StrongAlertOverlayController.dismiss(currentId)
                                         val app = application as PhoneTodoApp
-                                        if (todoId.isNotBlank() && !todoId.startsWith("test_reminder_")) {
-                                            val existing = app.todoRepository.data.value.activeTodos().firstOrNull { it.id == todoId }
+                                        if (currentId.isNotBlank() && !currentId.startsWith("test_reminder_")) {
+                                            val existing = app.todoRepository.data.value.activeTodos().firstOrNull { it.id == currentId }
                                             if (existing != null && !existing.done) {
-                                                app.todoRepository.toggleTodoDone(todoId)
+                                                app.todoRepository.toggleTodoDone(currentId)
                                             }
                                         }
-                                        if (notifId > 0) {
-                                            NotificationHelper.cancelReminderNotification(this@StrongAlertActivity, notifId)
+                                        if (currentNotifId > 0) {
+                                            NotificationHelper.cancelReminderNotification(this@StrongAlertActivity, currentNotifId)
                                         }
                                         finish()
                                     },
@@ -170,15 +172,18 @@ class StrongAlertActivity : ComponentActivity() {
                                     ),
                                 ) {
                                     Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Text(if (isRecurring) " 完成本次" else " 已完成", fontWeight = FontWeight.SemiBold)
+                                    Text(if (isRecurringState) " 完成本次" else " 已完成", fontWeight = FontWeight.SemiBold)
                                 }
                             }
 
                             TextButton(
                                 onClick = {
-                                    stopAlarmFeedback()
-                                    if (notifId > 0) {
-                                        NotificationHelper.cancelReminderNotification(this@StrongAlertActivity, notifId)
+                                    val currentId = todoIdState
+                                    val currentNotifId = notifIdState
+                                    StrongAlertAudioController.stop(currentId)
+                                    StrongAlertOverlayController.dismiss(currentId)
+                                    if (currentNotifId > 0) {
+                                        NotificationHelper.cancelReminderNotification(this@StrongAlertActivity, currentNotifId)
                                     }
                                     finish()
                                 },
@@ -192,54 +197,68 @@ class StrongAlertActivity : ComponentActivity() {
         }
     }
 
-    private fun startAlarmFeedback() {
-        runCatching {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            ringtone = RingtoneManager.getRingtone(this, uri)?.apply {
-                audioAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-                isLooping = true
-                play()
-            }
-        }
-        runCatching {
-            vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            }
-            vibrator?.vibrate(
-                VibrationEffect.createWaveform(longArrayOf(0, 450, 300, 450, 800), 0),
-            )
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyAlertIntent(intent)
+    }
+
+    private fun applyAlertIntent(intent: Intent) {
+        todoIdState = intent.getStringExtra(ReminderReceiver.EXTRA_TODO_ID).orEmpty()
+        todoTextState = intent.getStringExtra(ReminderReceiver.EXTRA_TODO_TEXT).orEmpty()
+        notifIdState = intent.getIntExtra(ReminderReceiver.EXTRA_NOTIF_ID, -1)
+        isRecurringState = intent.getBooleanExtra(ReminderReceiver.EXTRA_IS_RECURRING, false)
+        if (todoIdState.isNotBlank()) {
+            StrongAlertOverlayController.dismiss(todoIdState)
+            StrongAlertAudioController.start(this, todoIdState)
         }
     }
 
-    private fun stopAlarmFeedback() {
-        runCatching { ringtone?.stop() }
-        runCatching { vibrator?.cancel() }
+    override fun onResume() {
+        super.onResume()
+        visibleTodoId = todoIdState.takeIf { it.isNotBlank() }
+        if (todoIdState.isNotBlank()) {
+            StrongAlertOverlayController.dismiss(todoIdState)
+        }
+    }
+
+    override fun onPause() {
+        if (visibleTodoId == todoIdState) {
+            visibleTodoId = null
+        }
+        super.onPause()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            stopAlarmFeedback()
+            StrongAlertAudioController.stop(todoIdState.takeIf { it.isNotBlank() })
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onStop() {
-        if (!isChangingConfigurations) {
-            stopAlarmFeedback()
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!isChangingConfigurations && (isFinishing || pm.isInteractive)) {
+            StrongAlertAudioController.stop(todoIdState.takeIf { it.isNotBlank() })
         }
         super.onStop()
     }
 
     override fun onDestroy() {
-        stopAlarmFeedback()
+        if (visibleTodoId == todoIdState) {
+            visibleTodoId = null
+        }
+        if (!isChangingConfigurations) {
+            StrongAlertAudioController.stop(todoIdState.takeIf { it.isNotBlank() })
+        }
         super.onDestroy()
+    }
+
+    companion object {
+        @Volatile
+        private var visibleTodoId: String? = null
+
+        fun isVisibleFor(todoId: String): Boolean = visibleTodoId == todoId
     }
 }

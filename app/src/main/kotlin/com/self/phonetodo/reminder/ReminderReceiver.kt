@@ -12,6 +12,7 @@ class ReminderReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? PhoneTodoApp ?: return
         when (intent.action) {
             ACTION_TEST_STRONG_ALERT -> {
+                StrongAlertAudioController.wakeScreenBriefly(context)
                 NotificationHelper.sendTestNotification(context, strong = true)
                 return
             }
@@ -27,12 +28,17 @@ class ReminderReceiver : BroadcastReceiver() {
                 val expectedAt = todo?.reminder?.nextAt
                 // Ignore stale alarms if the user already rescheduled/cleared/completed this todo
                 if (todo != null && !todo.done && expectedAt != null && abs(expectedAt - firedAt) <= 10_000L) {
-                    NotificationHelper.showTodoReminder(context, todo, late = false)
+                    if (todo.strongAlert) {
+                        StrongAlertAudioController.wakeScreenBriefly(context)
+                    }
+                    NotificationHelper.showTodoReminder(context, todo, late = false, delayMs = 0L)
                     app.todoRepository.advanceReminderAfterFired(todo.id, expectedAt)
                 }
             }
 
             ACTION_MARK_DONE -> {
+                StrongAlertAudioController.stop(todoId)
+                StrongAlertOverlayController.dismiss(todoId)
                 val todo = app.todoRepository.data.value.activeTodos().firstOrNull { it.id == todoId }
                 if (todo != null && !todo.done) {
                     app.todoRepository.toggleTodoDone(todoId)
@@ -41,7 +47,15 @@ class ReminderReceiver : BroadcastReceiver() {
             }
 
             ACTION_SNOOZE_10M -> {
+                StrongAlertAudioController.stop(todoId)
+                StrongAlertOverlayController.dismiss(todoId)
                 app.todoRepository.snoozeReminder(todoId, 10L)
+                NotificationHelper.cancelReminderNotification(context, notifId)
+            }
+
+            ACTION_DISMISS_ALARM -> {
+                StrongAlertAudioController.stop(todoId)
+                StrongAlertOverlayController.dismiss(todoId)
                 NotificationHelper.cancelReminderNotification(context, notifId)
             }
         }
@@ -51,6 +65,7 @@ class ReminderReceiver : BroadcastReceiver() {
         const val ACTION_FIRE_REMINDER = "com.self.phonetodo.ACTION_FIRE_REMINDER"
         const val ACTION_MARK_DONE = "com.self.phonetodo.ACTION_MARK_DONE"
         const val ACTION_SNOOZE_10M = "com.self.phonetodo.ACTION_SNOOZE_10M"
+        const val ACTION_DISMISS_ALARM = "com.self.phonetodo.ACTION_DISMISS_ALARM"
         const val ACTION_TEST_STRONG_ALERT = "com.self.phonetodo.ACTION_TEST_STRONG_ALERT"
 
         const val EXTRA_TODO_ID = "extra_todo_id"

@@ -598,4 +598,15 @@ class PhoneTodoUnitTests {
         // Short-circuits cleanly when no status-bar notifications are active
         assertTrue(NotificationHelper.computeNotificationIdsToCancel(todos, emptySet()).isEmpty())
     }
+
+    @Test
+    fun strongAlertPolicy_survivesShortDozeDelaysAndSkipsHoursOldBacklog() {
+        assertFalse(NotificationHelper.shouldTriggerStrongAlert(strongAlert = false, delayMs = 0L))
+        assertTrue(NotificationHelper.shouldTriggerStrongAlert(strongAlert = true, delayMs = 0L))
+        // Previously > 90s delay silently downgraded strong alert; must stay strong within 30 min window
+        assertTrue(NotificationHelper.shouldTriggerStrongAlert(strongAlert = true, delayMs = 2 * 60_000L))
+        assertTrue(NotificationHelper.shouldTriggerStrongAlert(strongAlert = true, delayMs = NotificationHelper.STRONG_ALERT_MAX_DELAY_MS))
+        // Multi-hour backlog (e.g. phone powered off overnight) downgrades cleanly to normal missed notification
+        assertFalse(NotificationHelper.shouldTriggerStrongAlert(strongAlert = true, delayMs = NotificationHelper.STRONG_ALERT_MAX_DELAY_MS + 1L))
+    }
 }
